@@ -1,0 +1,7 @@
+(rocq.extraction
+ (prelude Extract)
+ (extracted_modules model)
+ (theories TCB Stdlib))
+
+(executable
+ (name main))

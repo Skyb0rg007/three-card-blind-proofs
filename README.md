@@ -1,5 +1,5 @@
 
-# three-card-blink-proofs
+# three-card-blind-proofs
 
 This repo contains a mechanization of the famous open problem in
 MTG three-card blind.
