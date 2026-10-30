@@ -66,7 +66,8 @@ From <https://www.3cardblind.com/format-info/rules>, retrieved 2026-10-30
   Player **B** has Hangarback Walker, Elixir of Immortality and City of
   Traitors.
 - **Starting player.** A parameter of the model. That player skips the draw
-  step of their first turn (CR 103.8a).
+  step of their first turn (CR 103.8a). This never matters here: their
+  library is empty then, because no Elixir can have been activated yet.
 - **Outcome.** Defined by F5:
   - A player wins if they have a strategy that reduces the opponent to 0 or
     less life (CR 704.5a) after finitely many moves, whatever the opponent
@@ -92,10 +93,11 @@ Each player has:
 - **Walkers on the battlefield:** each has a number of +1/+1 counters, a
   tapped flag and a summoning-sickness flag. A's battlefield holds at most 2
   and B's at most 1.
-- **Thopters:** counted by status (see S6):
-  - untapped and able to attack;
-  - untapped and summoning sick;
-  - tapped.
+- **Thopters:** counted as untapped or tapped (see S6). Summoning sickness
+  never needs tracking. Thopters are only made in a combat damage step (a
+  Walker cast for X=0 dies with no counters), so by their controller's next
+  declare attackers step they are no longer sick, and they have no {T}
+  abilities.
 - **Hand:** A holds 0–2 Walkers. B holds a subset of {Walker, Elixir}.
 - **B's other zones:**
   - The library is an ordered list of cards. It is always visible (F4).
@@ -158,8 +160,9 @@ get priority. In each of these steps, a *priority window* runs as described in
 - **Ending the window.** The window ends when both players pass in succession
   (CR 117.4, 500.2). There is no stack: every action resolves as soon as it is
   taken (S3).
-- **Termination.** Every action uses up something finite: a tapped permanent,
-  a card from hand, or a land drop. Windows therefore always end. Holding
+- **Termination.** Every action uses up something finite: a pump taps a
+  Walker, an Elixir activation removes Elixir from the battlefield, and a cast
+  uses a card from hand. Windows therefore always end. Holding
   priority forever without acting is the loop F5 forbids, and the model has no
   such move.
 
@@ -306,8 +309,10 @@ activated.**
 - **The only thing that could add to B's graveyard while an Elixir ability is
   on the stack** is casting a Walker for X=0. That is sorcery speed, so it
   can't happen then.
-- **Neither player loses an option.** In both the real game and the model, a
-  window only ends after both players pass in succession. Any action can
+- **Neither player loses an option.** After a resolution the real game gives
+  priority to the active player (CR 117.3b), while the model gives it back to
+  the player who acted. This makes no difference: in both the real game and
+  the model, a window only ends after both players pass in succession. Any action can
   therefore always be followed by any other legal action from either player.
 - Together, these mean any order of actions with responses reaches the same
   state as taking the same actions one after another in the model.
@@ -327,8 +332,9 @@ activated.**
 **S6 Thopters are counted by status, not tracked individually.**
 
 - Thopter tokens all have the same characteristics.
-- Two thopters with the same status (tapped, summoning sick, in combat) are
-  interchangeable for every rule and every action.
+- Two thopters with the same status (tapped or untapped, and in combat or
+  not) are interchangeable for every rule and every action. Summoning
+  sickness is not tracked; see §2.
 
 **S7 A thopter blocked by several thopters is treated as blocked by one.**
 

@@ -233,24 +233,63 @@ let () =
 (* Fixed points on the finite abstraction (Fix):
    fix safe|win A|B T TT LMAX STARTER; pfix safe|win A|B T TT LMAX <position as for pwin> *)
 let () =
+  let cfg who t ot tt lmax ~fulla ~macro ~fullopp =
+    { Fix.prot = pl who; t; ot; tt; lmax;
+      full_a = pl who = PB && fulla;
+      (* macro: the protagonist (B) only uses the macro move set (a sound restriction) *)
+      mine = (if macro then Reduce.b_macro else Reduce.moves);
+      (* fullopp: the opponent gets every legal move, not just the filter's *)
+      theirs = (if fullopp then Rules.moves else Reduce.moves) }
+  in
+  let flag v = Sys.getenv_opt v = Some "1" in
   let run mode who t tt lmax s0 =
-    let c = { Fix.prot = pl who; t = int_of_string t; ot = env_int "TCB_OT" (int_of_string t); tt = int_of_string tt; lmax = int_of_string lmax;
-              full_a = pl who = PB && Sys.getenv_opt "TCB_FULLA" = Some "1";
-              (* TCB_MACRO=1: the protagonist (B) only uses the macro move set (a sound restriction) *)
-              mine = (if Sys.getenv_opt "TCB_MACRO" = Some "1" then Reduce.b_macro else Reduce.moves);
-              (* TCB_FULLOPP=1: the opponent gets every legal move, not just the filter's *)
-              theirs = (if Sys.getenv_opt "TCB_FULLOPP" = Some "1" then Rules.moves else Reduce.moves) } in
+    let t = int_of_string t and tt = int_of_string tt and lmax = int_of_string lmax in
+    let ot = env_int "TCB_OT" t and fulla = flag "TCB_FULLA" and macro = flag "TCB_MACRO"
+    and fullopp = flag "TCB_FULLOPP" in
+    let c = cfg who t ot tt lmax ~fulla ~macro ~fullopp in
     let t0 = Sys.time () in
-    let ranks = env_int "TCB_LINE" 0 > 0 in
-    let sv = if mode = "safe" then Fix.safe c s0 else Fix.win ~ranks c s0 in
-    Printf.printf "%s %s from the start position: %s  (%.1fs)\n" who mode (Fix.show c (Fix.value c sv s0))
-      (Sys.time () -. t0);
-    (* TCB_LINE=N prints N turns of a line of play *)
+    (* TCB_LINE=N prints N turns of a line of play; TCB_RANKS=1 or TCB_LINE
+       computes the rounds a line needs *)
     let n = env_int "TCB_LINE" 0 in
+    let ranks = n > 0 || flag "TCB_RANKS" in
+    let sv = if mode = "safe" then Fix.safe c s0 else Fix.win ~ranks c s0 in
+    Printf.printf "%s %s from the start position: %s  (%.1fs)\n%!" who mode (Fix.show c (Fix.value c sv s0))
+      (Sys.time () -. t0);
+    (* TCB_SAVE=FILE writes the solved table *)
+    (match Sys.getenv_opt "TCB_SAVE" with
+     | Some path ->
+       let b i = if i then "1" else "0" in
+       Fix.save path
+         [ ("mode", mode); ("who", who); ("t", string_of_int t); ("ot", string_of_int ot);
+           ("tt", string_of_int tt); ("lmax", string_of_int lmax); ("fulla", b fulla);
+           ("macro", b macro); ("fullopp", b fullopp); ("blife", string_of_int s0.sideB.life);
+           ("start", Fix.hex (Fix.key_gen c.full_a s0)) ]
+         sv;
+       Printf.printf "saved %d positions to %s\n%!" sv.n path
+     | None -> ());
     if n > 0 then Fix.line c sv s0 s0.sideB.life n
+  in
+  (* fixload FILE [N [BLIFE]]: the value of the saved start position, and a
+     line of N turns (tables saved with ranks only) *)
+  let load path n blife =
+    let h, sv = Fix.load path in
+    let g k = List.assoc k h in
+    let gi k = int_of_string (g k) in
+    let c = cfg (g "who") (gi "t") (gi "ot") (gi "tt") (gi "lmax") ~fulla:(g "fulla" = "1")
+        ~macro:(g "macro" = "1") ~fullopp:(g "fullopp" = "1") in
+    let s0 = Fix.of_key (Fix.unhex (g "start")) in
+    let life = match blife with Some l -> l | None -> gi "blife" in
+    Printf.printf "%s: %s %s, %d positions; start position: %s\n" path (g "who") (g "mode") sv.Fix.n
+      (Fix.show c (Fix.value c sv s0));
+    if n > 0 then
+      if Array.length sv.Fix.hist = sv.Fix.n then Fix.line c sv s0 life n
+      else print_endline "(no ranks saved: re-solve with TCB_RANKS=1 to print lines)"
   in
   match Sys.argv with
   | [| _; "fix"; mode; who; t; tt; lmax; starter |] -> run mode who t tt lmax (init (pl starter))
+  | [| _; "fixload"; path |] -> load path 0 None
+  | [| _; "fixload"; path; n |] -> load path (int_of_string n) None
+  | [| _; "fixload"; path; n; l |] -> load path (int_of_string n) (Some (int_of_string l))
   | [| _; "pfix"; mode; who; t; tt; lmax; act; al; aw; at; ah; bl; bw; bt; bh; el |] ->
     let s = position (pl act) (int_of_string al) aw (int_of_string at) (int_of_string ah)
         (int_of_string bl) bw (int_of_string bt) (int_of_string bh) el in

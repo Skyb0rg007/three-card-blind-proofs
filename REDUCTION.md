@@ -43,6 +43,12 @@ Thresholds compose exactly through a turn:
 This removes the one dimension that is unbounded in *every* line of play: B
 can gain 5 life every two rounds forever.
 
+Monotonicity is proven in `theories/Mono.v`, for either player: `wins_bump`
+(a win stays a win with more life), `safe_bump` (likewise for safety) and
+`wins_opp_bump` (an opponent's win against more life is a win against
+less). All three rest on `step_bump`: adding life to a player commutes with
+every move, unless the original move made that player lose.
+
 Values are cut at `lmax` on the pessimistic side only:
 - B needing more than `lmax` counts as "never";
 - A's bound on B's life is lowered to `lmax`.
@@ -58,8 +64,12 @@ restricted move set is a safe strategy. Two restrictions are used.
   player. The player can play exactly as before and ignore the Thopter. No
   opposing option depends on the existence of an unused untapped or tapped
   Thopter: attacks are unrestricted, and blocks and damage-assignment orders
-  only involve creatures the owner chose to block with. (To be written as a
-  simulation lemma for step 6.)
+  only involve creatures the owner chose to block with. Proven in
+  `theories/Mono.v` as `wins_thop` and `safe_thop`: if `t` matches `s`
+  except that `p` has at least as many untapped and at least as many tapped
+  Thopters, then a win or safety for `p` from `s` holds from `t` too. Every
+  step preserves the relation (`step_thop`), the opponent's moves are the
+  same (`moves_thop_opp`), and `p`'s own moves only grow (`moves_thop_mine`).
 
 ## R4. Saturating the opponent (sound by pessimism)
 
@@ -85,7 +95,8 @@ instead.
 `TCB_FULLA=1` resets A's life to 20 at every turn start. For B-safety this is
 pessimistic, since A's life is monotone good for A like B's is for B. It
 removes A's life from the position (a factor of 20), and it is valid
-whenever B's defence does not rely on threatening to kill A.
+whenever B's defence does not rely on threatening to kill A. The
+monotonicity used here is `safe_bump` with `p = PA` (`theories/Mono.v`).
 
 ## R5b. Solving by A-life level (exact)
 
@@ -112,7 +123,10 @@ dominance that keeps pumps at end of turn or after blocks, Elixir in upkeep,
 end step or after blocks, and X = 1. For the protagonist this is a
 restriction, which is sound. For the opponent it must be justified by
 dominance lemmas or replaced by `Rules.moves` before a certificate counts.
-**Open.**
+For the B wins in the results below it has been replaced: every one of them
+was re-solved with `TCB_FULLOPP=1` (A gets every move in `Rules.moves`) and
+came out the same, so they don't depend on R6. The dominance lemmas are
+still open, and matter only for runs that keep the filter.
 
 ## Results so far
 
@@ -127,12 +141,13 @@ The spot check passes in every run.
 | opening, A first | B-safe | 4/4 | not safe (1.43M positions, 10 min) |
 
 | lone-walker fortress² | B-wins (lfp) | B Walker 3, tt 10, A huge > 10 | A on 4 life: **B wins with any life** (161k; also with every legal A move, 207k) |
-| same | B-wins | B Walker 3, tt 14, A huge > 12 | A on 8: **any life** (740k); A on 12: **B life ≥ 3** (1.3M) |
+| same | B-wins | B Walker 3, tt 14, A huge > 12 | A on 8: **any life** (740k; every legal A move, 963k); A on 12: **B life ≥ 3** (1.3M; every legal A move, 1.72M) |
 
 ² A active; A: one 3/3 Walker, no Thopters. B: one 1/1 Walker, no Thopters,
 Elixir in hand.
 
-| two A Walkers³ | B-wins, macro B | B Walker 4, tt 10, A huge > 8 | A on 4 life: **B wins with B life ≥ 9** (1.23M) |
+| two A Walkers³ | B-wins, macro B | B Walker 4, tt 10, A huge > 8 | A on 4 life: **B wins with B life ≥ 9** (1.23M; every legal A move, 2.32M) |
+| opening, A first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 5.9 h) |
 
 ³ A active; A: 3/3 and 3/3, no Thopters. B: a 3/3, no Thopters, Elixir in
 hand.
@@ -141,6 +156,11 @@ hand.
 in synchronous rounds within each A-life level. B plays a move that keeps
 its value as of the previous round, so every turn makes progress: either A's
 life drops or the round count does. A plays a move that is worst for B.
+
+Solved tables can be written to disk with `TCB_SAVE=FILE`, plus
+`TCB_RANKS=1` to keep the rounds a line needs. `main fixload FILE [N [BLIFE]]`
+reloads one, prints the start value, and replays N turns. Tables live in
+`tables/`, which git ignores; they take about 40 bytes per position.
 
 A B win found this way is sound with no extra assumption beyond R3, R4 and
 Thopter monotonicity. Every value comes from a finite strategy: a cycle

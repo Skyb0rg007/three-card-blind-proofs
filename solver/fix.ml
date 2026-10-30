@@ -410,8 +410,9 @@ let solve ?(ranks = false) c sv ~start =
             Array.iter (fun j' -> if not queued.(j') then (queued.(j') <- true; Queue.add j' work)) preds.(j)
           end
         done;
-        Printf.printf "  A life %d: %d positions, %d program words, %d evaluations so far (%.1fs)\n%!"
-          l m words !evals (Sys.time () -. t0)
+        let good = Array.fold_left (fun a i -> if sv.vals.(i) <> lose c then a + 1 else a) 0 members in
+        Printf.printf "  A life %d: %d positions (%d not lost for the protagonist), %d program words, %d evaluations so far (%.1fs)\n%!"
+          l m good words !evals (Sys.time () -. t0)
       end)
     level;
   (* spot check: the compiled turns agree with direct evaluation through the model *)
@@ -486,3 +487,59 @@ let line c sv s0 life turns =
     | None -> if Search.is_turn_start s then walk s t else go lk s t
   in
   walk { s0 with sideB = { s0.sideB with life } } 0
+
+(* Solved tables on disk. A text header line of key=value fields, then per
+   position: the packed key (length byte, bytes), its value, and the
+   (round, value) history when ranks were computed. Values are 32-bit, with
+   the sentinels ninf and inf stored as the int32 extremes. *)
+let to32 v = if v <= ninf then -0x40000000 else if v >= inf then 0x3fffffff else v
+let of32 v = if v = -0x40000000 then ninf else if v = 0x3fffffff then inf else v
+
+let save path header sv =
+  let oc = open_out_bin path in
+  output_string oc "TCBFIX 1\n";
+  output_string oc (String.concat " " (List.map (fun (k, v) -> k ^ "=" ^ v) header) ^ "\n");
+  output_binary_int oc sv.n;
+  let ranks = Array.length sv.hist = sv.n in
+  output_byte oc (if ranks then 1 else 0);
+  Array.iteri (fun i k ->
+      output_byte oc (String.length k);
+      output_string oc k;
+      output_binary_int oc (to32 sv.vals.(i));
+      if ranks then begin
+        output_binary_int oc (List.length sv.hist.(i));
+        List.iter (fun (r, v) -> output_binary_int oc r; output_binary_int oc (to32 v)) sv.hist.(i)
+      end)
+    sv.keys;
+  close_out oc
+
+let load path =
+  let ic = open_in_bin path in
+  if input_line ic <> "TCBFIX 1" then failwith (path ^ ": not a solved table");
+  let header =
+    List.filter_map (fun f ->
+        match String.index_opt f '=' with
+        | Some i -> Some (String.sub f 0 i, String.sub f (i + 1) (String.length f - i - 1))
+        | None -> None)
+      (String.split_on_char ' ' (input_line ic))
+  in
+  let n = input_binary_int ic in
+  let ranks = input_byte ic = 1 in
+  let ids = Hashtbl.create n in
+  let keys = Array.make n "" and vals = Array.make n 0 in
+  let hist = if ranks then Array.make n [] else [||] in
+  for i = 0 to n - 1 do
+    let k = really_input_string ic (input_byte ic) in
+    keys.(i) <- k;
+    Hashtbl.replace ids (Tsearch.digest_key k) i;
+    vals.(i) <- of32 (input_binary_int ic);
+    if ranks then
+      hist.(i) <- List.init (input_binary_int ic) (fun _ ->
+          let r = input_binary_int ic in
+          (r, of32 (input_binary_int ic)))
+  done;
+  close_in ic;
+  (header, { ids; keys; n; vals; hist })
+
+let hex s = String.concat "" (List.map (fun c -> Printf.sprintf "%02x" (Char.code c)) (List.of_seq (String.to_seq s)))
+let unhex h = String.init (String.length h / 2) (fun i -> Char.chr (int_of_string ("0x" ^ String.sub h (2 * i) 2)))
