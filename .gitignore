@@ -2,3 +2,6 @@ _build/
 cr/
 tables/
 .lia.cache
+rsolver/target/
+site/target/
+site/dist/

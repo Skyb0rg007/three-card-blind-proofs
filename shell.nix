@@ -12,5 +12,8 @@ pkgs.mkShell {
     ocamlPackages.dune_3
     ocamlPackages.findlib
     pkgs.curl
+    # the Rust solver (rsolver/)
+    pkgs.cargo
+    pkgs.rustc
   ];
 }

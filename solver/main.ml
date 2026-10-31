@@ -359,6 +359,8 @@ let () =
   in
   match Sys.argv with
   | [| _; "fixcmp"; a; b |] -> compare_tables a b
+  | [| _; "walk"; seed; steps |] -> Walk.run (int_of_string seed) (int_of_string steps)
+  | [| _; "walk"; seed; steps; "bias" |] -> Walk.run ~bias:true (int_of_string seed) (int_of_string steps)
   | [| _; "fix"; mode; who; t; tt; lmax; starter |] -> run mode who t tt lmax (init (pl starter))
   | [| _; "fixload"; path |] -> load path 0 None
   | [| _; "fixload"; path; n |] -> load path (int_of_string n) None

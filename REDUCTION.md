@@ -205,6 +205,60 @@ two-Walker subgame (6/8 to 8/10, where the start value moves from "never" to
 B life ≥ 9) give byte-identical values with about half the sweeps. Ranks
 can't be numbered from a warm start, so `TCB_FROM` excludes `TCB_RANKS`.
 
+**The Rust solver (`rsolver/`).** A port of the model (`theories/Model.v`),
+the filter and macros, and `fix`. It writes the same tables, so `main
+fixcmp` and `main fixload` work on them. It is not trusted:
+- `main walk SEED STEPS [bias]` and `rsolver walk` print the same seeded
+  random walk through the model: every state, its four move lists (full,
+  filter, both macros), and each turn start's packed key and digest. The
+  outputs must be byte-identical. 16 walks of 100k–200k steps are.
+- Tables solved by both must have identical values. So far: A-safe 4/4 and
+  6/6, B-win 4/6 (macro), B-safe 4/4 with A's life pinned, and A-win 4/4,
+  B first, with every legal B move. All have 0 differences and the same
+  number of program words.
+- The spot check re-evaluates every 500th position through the model.
+
+Differences from the OCaml solver:
+- Threads instead of forked workers.
+- Exploration in memory.
+- **Worklist sweeps.** After compiling, each base gets the list of bases
+  whose turns read it at the same A-life level: turn starts reached with no
+  damage to A, or all of them when A's life is pinned. A sweep evaluates only
+  dirty positions. A position's flag is cleared before it is evaluated, and
+  a change marks its readers dirty. So any change to an input leads to
+  another evaluation, and a sweep that finds nothing dirty ends the level at
+  the same fixed point. On the tests above this takes 2.3–9× fewer
+  evaluations.
+- **Compiled while exploring.** Each base's turn is compiled when it is
+  expanded, and that one search also finds its successors. A turn start gets
+  an id when first reached, from a sharded map shared by the threads, so
+  programs refer to turn starts by discovery order. The tables stay in
+  digest order, with a permutation from ids to bases.
+- **Packed programs** (`fix::pack`). The compiled program is rewritten as:
+  - a per-turn table of the turn starts it reads, ascending, as varint
+    differences;
+  - then the nodes, each child one varint: a constant, the node a given
+    distance back, or a table entry.
+
+  Rewrite rules:
+  - A guard ("lost when A's life is at most g") and a change in B's life
+    become two optional varints on the reference, instead of a node.
+  - Single-child nodes fold into their references, identical nodes are
+    shared, and a node read once with the same operator merges into its
+    reader.
+
+  Programs are 4–5× smaller than the OCaml word format. The A-safe 14/14
+  programs drop from 54 GB to about 5.5 GB, so the sweeps run from the page
+  cache instead of disk. Values are unchanged: the five comparison tables
+  above are byte-identical.
+- mimalloc, and each intra-turn state hashed once: 26% fewer instructions
+  per compiled turn.
+- No ranks, lines or warm starts yet.
+
+Build with `nix-shell --run 'cd rsolver && cargo build --release'`, then
+run `rsolver/target/release/rsolver fix …` with the same arguments and
+`TCB_*` variables as `main fix`.
+
 ## R5c. Macro moves for the protagonist (sound by restriction)
 
 `TCB_MACRO=1` restricts the protagonist to its macro move set:
@@ -326,6 +380,8 @@ Elixir in hand.
 | same | A-wins | t 6, tt 6, ott 6, B huge > 6 / 10 / 14 | B life ≤ 13 / **15** / **15**; with B huge > 10 also 15 with A's filter instead of the macro, and 15 with every legal A move (`TCB_FULLMINE=1`, 823k bases). Relaxing every R4 rule (unsound) at 6/6 gives 15 too. |
 | same | A-wins, A macro `atk2,…`, **every legal B move** (`TCB_FULLOPP=1`) | t 6, tt 6, ott 6, B huge > 10 | **A wins with B life ≤ 15** (12.0M positions, 10 min). Sound: B is unrestricted, and A's restrictions and caps only weaken A. |
 | opening, B first | A-wins, as above, every legal B move | t 6, tt 6, ott 6, B huge > 10 | **A wins with B life ≤ 10** (12.0M positions, 10 min). Sound. |
+| opening, A first | B-safe, B macro `blk,atk2,dmg`, `lmax` 100 | B Walker 10, tt 10, A huge > 10, ott 20 | **B safe with B life ≥ 20** (41.3M positions = 2.06M bases × 20, 7.2 min with `rsolver` on 14 threads; the OCaml solver took 42 min for the first A-life level alone). So A can't win from 20 with A's filter. |
+| same | same, **every legal A move** (`TCB_FULLOPP=1`) | same | **B safe with B life ≥ 20** (81.7M positions = 4.09M bases × 20, 18.6 min, 3.2G program words). Sound: A is unrestricted, and B's macro, caps, A's saturation and `lmax` only weaken B. **A can't force a win from the real opening.** |
 
 **What the A-first numbers say.** A's win stops at B life 15 whatever is
 relaxed on A's side (caps, macro, filter, R4). Only B's filter is left, and
@@ -334,10 +390,12 @@ tried on B's side (caps 14 and 18, the macro and `atk2`). So the real
 thresholds are very likely A wins iff B life ≤ 15 and B wins iff B life ≥ 25:
 from the real start, at B life 20, **neither player can force a win**. To
 prove it, the safety checks must reach 20: A-safe with B life ≥ 20 (so B
-can't win) and B-safe with B life ≤ 20 (so A can't). With capped Walkers
-and Thopters both checks collapse onto the win checks (A-safe = A-win = 15 at
-6/6 and 10/10), because a long game always reaches a cap and the cap is a
-loss for the protagonist. This is the growth equilibrium described below.
+can't win) and B-safe with B life ≤ 20 (so A can't). The B half is now done:
+B-safe at B Walker 10, tt 10, with every legal A move, gives exactly 20.
+For A, capped Walkers and Thopters make the check collapse onto the win check
+(A-safe = A-win = 15 at 6/6 and 10/10), because a long game always reaches a
+cap and the cap is a loss for the protagonist. This is the growth
+equilibrium described below.
 | opening, B first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 6.1 h) |
 
 ³ A active; A: 3/3 and 3/3, no Thopters. B: a 3/3, no Thopters, Elixir in
