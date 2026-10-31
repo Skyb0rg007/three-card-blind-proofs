@@ -1,0 +1,27 @@
+[package]
+name = "tcb-engine"
+version = "0.1.0"
+edition = "2021"
+description = "WASM build of the rsolver game model plus a bounded search, for the play site"
+
+# Not part of any other workspace.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "engine-bench"
+path = "src/bench.rs"
+
+[dependencies]
+# Needed by rsolver/src/fix.rs (turn-start keys and digests in the walk).
+md-5 = "0.10"
+rustc-hash = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

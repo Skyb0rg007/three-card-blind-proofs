@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hangarback 3CB</title>
+<meta name="description" content="Play the 3-Card Blind Hangarback Walker matchup against a search engine built on the formal game model.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect x=%222%22 y=%221%22 width=%2212%22 height=%2214%22 rx=%222%22 fill=%22%232f5d8a%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1>Hangarback <span class="dim">3-Card Blind</span></h1>
+  <nav>
+    <button id="btn-undo" type="button" title="Take back your last decision">Undo</button>
+    <button id="btn-restart" type="button" title="Restart with the same settings">Restart</button>
+    <button id="btn-new" type="button">New game</button>
+    <button id="btn-draw" type="button" title="End the game as a draw">Draw</button>
+    <button id="btn-about" type="button">About</button>
+  </nav>
+</header>
+
+<main id="app" hidden>
+  <section class="board">
+    <div id="side-top" class="side"></div>
+    <div id="turnbar" class="turnbar"></div>
+    <div id="combat" class="combat" hidden></div>
+    <div id="side-bottom" class="side"></div>
+  </section>
+
+  <section class="panel">
+    <div id="status" class="status" aria-live="polite"></div>
+    <div id="banner" class="banner" hidden></div>
+    <div id="controls" class="controls"></div>
+    <div id="engine-info" class="engine-info"></div>
+    <div class="log-head">
+      <h2>Move log</h2>
+      <label class="toggle"><input type="checkbox" id="show-passes"> show passes</label>
+    </div>
+    <ol id="log" class="log"></ol>
+  </section>
+</main>
+
+<p id="loading" class="loading">Loading the engine…</p>
+
+<dialog id="setup">
+  <form method="dialog" id="setup-form">
+    <h2>New game</h2>
+    <fieldset>
+      <legend>You play</legend>
+      <label class="choice"><input type="radio" name="human" value="A" checked>
+        <span><b>A</b>: Hangarback Walker ×2, City of Traitors</span></label>
+      <label class="choice"><input type="radio" name="human" value="B">
+        <span><b>B</b>: Hangarback Walker, Elixir of Immortality, City of Traitors</span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Who goes first</legend>
+      <label class="choice inline"><input type="radio" name="starter" value="A" checked><span>A</span></label>
+      <label class="choice inline"><input type="radio" name="starter" value="B"><span>B</span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Engine thinking time</legend>
+      <label class="choice inline"><input type="radio" name="budget" value="300"><span>0.3 s</span></label>
+      <label class="choice inline"><input type="radio" name="budget" value="1000" checked><span>1 s</span></label>
+      <label class="choice inline"><input type="radio" name="budget" value="3000"><span>3 s</span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Automatic passing for you</legend>
+      <label class="choice"><input type="radio" name="autopass" value="smart" checked>
+        <span>Skip windows where no action can help (recommended). Main phases where you can cast still stop.</span></label>
+      <label class="choice"><input type="radio" name="autopass" value="only">
+        <span>Only when passing is your only legal move</span></label>
+    </fieldset>
+    <details>
+      <summary>Variant: starting life</summary>
+      <p class="dim small">The real game starts at 20. The solver shows A wins if B starts at 15 or less.</p>
+      <label class="num">A life <input type="number" name="lifeA" min="1" max="200" value="20"></label>
+      <label class="num">B life <input type="number" name="lifeB" min="1" max="200" value="20"></label>
+    </details>
+    <p class="dim small">The computer plays a bounded search with a heuristic, not proven-optimal play: this game is unsolved. See About.</p>
+    <div class="row end">
+      <button value="cancel" id="setup-cancel" formnovalidate>Cancel</button>
+      <button value="start" class="primary" id="setup-start">Start</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="about">
+  <form method="dialog">
+    <h2>About this game</h2>
+    <p>This is the 3-Card Blind matchup modelled in the <code>three-card-blind-proofs</code> repository.
+      Both players see everything, start at 20 life and start with their three cards in hand.
+      City of Traitors is treated as already on the battlefield (RULES.md S1). When Elixir shuffles
+      B's library, A chooses the order, because 3CB resolves random effects in the way most
+      favourable to the opponent.</p>
+    <p>The rules engine is the repository's Rust port of the Rocq model (<code>theories/Model.v</code>),
+      compiled unchanged to WebAssembly. It is checked against the native solver's
+      differential walk, byte for byte.</p>
+    <h3>How strong is the computer?</h3>
+    <p><b>The computer plays a bounded search, not proven-optimal play.</b> It searches every
+      decision of the current turn and several more turns, then scores the position with a
+      heuristic: life totals, counters, Thopters, cards, and lethal threats.
+      The real game is unsolved. The solver's tables run to tens of millions of positions and
+      several gigabytes, so they can't be shipped to a browser.</p>
+    <h3>What the research says so far</h3>
+    <ul>
+      <li>From the opening where A goes first, the solver shows A <b>cannot</b> force a win: B survives from 20 life.</li>
+      <li>A does win if B starts with 15 life or less.</li>
+      <li>B is believed to need about 25 life to force a win.</li>
+      <li>So the real game is believed to be a draw, but that is unproven on B's side.</li>
+    </ul>
+    <p>Walkers can grow forever and Elixir can loop, so games can go on indefinitely. The page
+      offers a draw when a position repeats or the game runs long, and you can declare one at
+      any time.</p>
+    <div class="row end"><button class="primary" value="close">Close</button></div>
+  </form>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
