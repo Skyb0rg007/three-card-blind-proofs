@@ -137,6 +137,10 @@ fn main() {
             let c = cfg_from_env(pl(who), t.parse().unwrap(), tt.parse().unwrap(), 100);
             progstat::run_table(&c, dir, every.parse().unwrap())
         }
+        [_, "treesize", dir, who, t, tt, every] => {
+            let c = cfg_from_env(pl(who), t.parse().unwrap(), tt.parse().unwrap(), 100);
+            progstat::tree_sizes(&c, dir, every.parse().unwrap())
+        }
         [_, "progstats", who, t, tt, starter, n, seed] => {
             let c = cfg_from_env(pl(who), t.parse().unwrap(), tt.parse().unwrap(), 100);
             progstat::run(&c, &model::init(pl(starter)), n.parse().unwrap(), seed.parse().unwrap())

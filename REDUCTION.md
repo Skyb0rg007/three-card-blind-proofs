@@ -22,6 +22,15 @@ Positions are kept only at the start of a turn (untap done, upkeep, nobody
 has passed). Everything inside a turn is a finite game tree that is searched
 again each time the position is evaluated. This is exact.
 
+One wrinkle: the solvers stop at any upkeep window nobody has passed in,
+including the one after the non-active player acts in the active player's
+upkeep (the actor keeps priority). The packed key records only the active
+player, so that position is read as the one where the active player has
+priority. The two are not the same position. The certificate checker
+(`theories/Checker.v`) therefore counts a turn start only when the active
+player has priority, and searches through the other case. The B-safe table
+for the A-first opening passes that stricter check (see Results).
+
 ## R2. B's life as a threshold (exact)
 
 Every property used here is monotone in B's life. More life never hurts B,
@@ -376,6 +385,7 @@ Elixir in hand.
 | same | B-wins, B macro `blk,atk2,dmg` | B Walker 4, tt 14, A huge > 14 | **B wins with B life ≥ 25** (59.4M positions = 2.97M bases × 20, 43 min on 14 workers, warm-started from the 14/14 macro table). 6.1M of that table's positions improve for B; the start value does not move. |
 | opening, A first | A-safe, A macro | 6/6 | **A safe with B life ≤ 12** (4.95M positions, 41 s); A-win gives the same value |
 | same | A-safe, A macro | 10/10 | **A safe with B life ≤ 15** (36.1M positions, 26 min). Raising one cap alone from 6/6 to 10 gives 12 (`t`, `tt`, `ott`) or 13 (`ot`): the caps only help together. |
+| same | A-safe, A macro `atk2,pump,order,dmg`, `lmax` 100 | 14/14 | **A safe with B life ≤ 15** (162M positions = 8.1M bases × 20, 42 min with `rsolver`; 9.2 GB of packed programs). Bigger caps don't help: the check is stuck on the cap collapse. |
 | same | A-wins, A macro `atk2,pump,order,dmg` | 10/10 | **A wins with B life ≤ 15** (40.7M positions, 71 min); the same as A-safe |
 | same | A-wins | t 6, tt 6, ott 6, B huge > 6 / 10 / 14 | B life ≤ 13 / **15** / **15**; with B huge > 10 also 15 with A's filter instead of the macro, and 15 with every legal A move (`TCB_FULLMINE=1`, 823k bases). Relaxing every R4 rule (unsound) at 6/6 gives 15 too. |
 | same | A-wins, A macro `atk2,…`, **every legal B move** (`TCB_FULLOPP=1`) | t 6, tt 6, ott 6, B huge > 10 | **A wins with B life ≤ 15** (12.0M positions, 10 min). Sound: B is unrestricted, and A's restrictions and caps only weaken A. |
@@ -393,7 +403,7 @@ prove it, the safety checks must reach 20: A-safe with B life ≥ 20 (so B
 can't win) and B-safe with B life ≤ 20 (so A can't). The B half is now done:
 B-safe at B Walker 10, tt 10, with every legal A move, gives exactly 20.
 For A, capped Walkers and Thopters make the check collapse onto the win check
-(A-safe = A-win = 15 at 6/6 and 10/10), because a long game always reaches a
+(A-safe = A-win = 15 at 6/6, 10/10 and 14/14), because a long game always reaches a
 cap and the cap is a loss for the protagonist. This is the growth
 equilibrium described below.
 | opening, B first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 6.1 h) |

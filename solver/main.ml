@@ -359,6 +359,8 @@ let () =
   in
   match Sys.argv with
   | [| _; "fixcmp"; a; b |] -> compare_tables a b
+  | [| _; "certify"; dir; starter |] -> Certify.run dir (pl starter)
+  | [| _; "certify-debug"; dir; hex; v |] -> Certify.debug dir hex (int_of_string v)
   | [| _; "walk"; seed; steps |] -> Walk.run (int_of_string seed) (int_of_string steps)
   | [| _; "walk"; seed; steps; "bias" |] -> Walk.run ~bias:true (int_of_string seed) (int_of_string steps)
   | [| _; "fix"; mode; who; t; tt; lmax; starter |] -> run mode who t tt lmax (init (pl starter))

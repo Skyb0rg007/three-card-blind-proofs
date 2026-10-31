@@ -251,3 +251,47 @@ fn report(t: &Tally) {
     println!("packed (guards folded, one-word references): {} words ({:.1}%); also hash-consed: {} ({:.1}%)", t.packed, pct(t.packed, t.words), t.packed_consed, pct(t.packed_consed, t.words));
     println!("flattening single-use same-operator children saves {} words ({:.1}%)", t.flat_words, pct(t.flat_words, t.words));
 }
+
+/// Size of each turn's search tree without memoisation (capped), against
+/// the memoised node count: what a checker without a memo table would
+/// visit.
+pub fn tree_sizes(c: &Cfg, dir: &str, every: usize) {
+    fn count(c: &Cfg, s: &State, root: bool, budget: &mut u64) -> u64 {
+        if *budget == 0 {
+            return 0;
+        }
+        *budget -= 1;
+        if winner(s).is_some() || (!root && is_turn_start(s)) {
+            return 1;
+        }
+        let mut n = 1;
+        let one = to_move(s) == c.prot && std::env::var("TCB_ONEB").is_ok();
+        for m in c.moves_for(s) {
+            if one && n > 1 {
+                break;
+            }
+            if c.huge_event(s, &m) {
+                continue;
+            }
+            let mut s2 = step(s, &m);
+            c.clamp(&mut s2);
+            if c.too_many(&s2) {
+                continue;
+            }
+            n += count(c, &s2, false, budget);
+        }
+        n
+    }
+    let keys = std::fs::read(std::path::Path::new(dir).join("keys")).unwrap();
+    let mut sizes = vec![];
+    for r in keys.chunks(32).step_by(every) {
+        let base = &r[1..1 + r[0] as usize];
+        let st = fix::of_key(&fix::with_life(base, 20));
+        let mut budget = 10_000_000u64;
+        sizes.push(count(c, &st, true, &mut budget));
+    }
+    sizes.sort();
+    let n = sizes.len();
+    let total: u64 = sizes.iter().sum();
+    println!("{n} turns: tree nodes mean {:.0}, median {}, p90 {}, p99 {}, max {} (cap 1e7)", total as f64 / n as f64, sizes[n / 2], sizes[n * 9 / 10], sizes[n * 99 / 100], sizes[n - 1]);
+}
