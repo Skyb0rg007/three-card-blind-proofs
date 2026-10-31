@@ -247,42 +247,55 @@ let () =
     let ot = env_int "TCB_OT" t and fulla = flag "TCB_FULLA" and macro = flag "TCB_MACRO"
     and fullopp = flag "TCB_FULLOPP" in
     let c = cfg who t ot tt lmax ~fulla ~macro ~fullopp in
-    let t0 = Sys.time () in
+    let t0 = Unix.gettimeofday () in
     (* TCB_LINE=N prints N turns of a line of play; TCB_RANKS=1 or TCB_LINE
        computes the rounds a line needs *)
     let n = env_int "TCB_LINE" 0 in
     let ranks = n > 0 || flag "TCB_RANKS" in
-    let sv = if mode = "safe" then Fix.safe c s0 else Fix.win ~ranks c s0 in
+    (* TCB_SAVE=DIR solves in DIR and keeps it as a saved table; otherwise the
+       solver works in a temporary directory under TCB_WORK (default tables/) *)
+    let dir = match Sys.getenv_opt "TCB_SAVE" with
+      | Some d -> d
+      | None ->
+        let base = Option.value (Sys.getenv_opt "TCB_WORK") ~default:"tables" in
+        Filename.concat base (Printf.sprintf ".work-%d" (Unix.getpid ())) in
+    let sv = if mode = "safe" then Fix.safe c s0 dir else Fix.win ~ranks c s0 dir in
     Printf.printf "%s %s from the start position: %s  (%.1fs)\n%!" who mode (Fix.show c (Fix.value c sv s0))
-      (Sys.time () -. t0);
-    (* TCB_SAVE=FILE writes the solved table *)
-    (match Sys.getenv_opt "TCB_SAVE" with
-     | Some path ->
-       let b i = if i then "1" else "0" in
-       Fix.save path
-         [ ("mode", mode); ("who", who); ("t", string_of_int t); ("ot", string_of_int ot);
-           ("tt", string_of_int tt); ("lmax", string_of_int lmax); ("fulla", b fulla);
-           ("macro", b macro); ("fullopp", b fullopp); ("blife", string_of_int s0.sideB.life);
-           ("start", Fix.hex (Fix.key_gen c.full_a s0)) ]
-         sv;
-       Printf.printf "saved %d positions to %s\n%!" sv.n path
-     | None -> ());
-    if n > 0 then Fix.line c sv s0 s0.sideB.life n
+      (Unix.gettimeofday () -. t0);
+    if n > 0 then Fix.line c sv s0 s0.sideB.life n;
+    match Sys.getenv_opt "TCB_SAVE" with
+    | Some path ->
+      let b i = if i then "1" else "0" in
+      Fix.save_meta sv
+        [ ("mode", mode); ("who", who); ("t", string_of_int t); ("ot", string_of_int ot);
+          ("tt", string_of_int tt); ("lmax", string_of_int lmax); ("fulla", b fulla);
+          ("macro", b macro); ("fullopp", b fullopp); ("blife", string_of_int s0.sideB.life);
+          ("start", Fix.hex (Fix.key_gen c.full_a s0)) ];
+      Printf.printf "saved %d positions to %s\n%!" sv.n path
+    | None -> Fix.remove sv
   in
-  (* fixload FILE [N [BLIFE]]: the value of the saved start position, and a
-     line of N turns (tables saved with ranks only) *)
+  (* fixload TABLE [N [BLIFE]]: the value of the saved start position, and a
+     line of N turns (tables saved with ranks only). TABLE is a saved
+     directory, or an old single-file table (converted once, into TABLE.d).
+     TCB_START=A or B looks up that player's opening instead, if the table
+     reached it. *)
   let load path n blife =
     let h, sv = Fix.load path in
     let g k = List.assoc k h in
     let gi k = int_of_string (g k) in
     let c = cfg (g "who") (gi "t") (gi "ot") (gi "tt") (gi "lmax") ~fulla:(g "fulla" = "1")
         ~macro:(g "macro" = "1") ~fullopp:(g "fullopp" = "1") in
-    let s0 = Fix.of_key (Fix.unhex (g "start")) in
+    let s0 = match Sys.getenv_opt "TCB_START" with
+      | Some p -> init (pl p)
+      | None -> Fix.of_key (Fix.unhex (g "start")) in
     let life = match blife with Some l -> l | None -> gi "blife" in
+    match Fix.value c sv s0 with
+    | exception Not_found -> Printf.printf "%s: the start position is not in this table\n" path
+    | v ->
     Printf.printf "%s: %s %s, %d positions; start position: %s\n" path (g "who") (g "mode") sv.Fix.n
-      (Fix.show c (Fix.value c sv s0));
+      (Fix.show c v);
     if n > 0 then
-      if Array.length sv.Fix.hist = sv.Fix.n then Fix.line c sv s0 life n
+      if Fix.has_ranks sv then Fix.line c sv s0 life n
       else print_endline "(no ranks saved: re-solve with TCB_RANKS=1 to print lines)"
   in
   match Sys.argv with

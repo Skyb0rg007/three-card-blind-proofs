@@ -102,11 +102,43 @@ monotonicity used here is `safe_bump` with `p = PA` (`theories/Mono.v`).
 
 A never gains life, so a turn only ends in a position with the same or
 lower A life. Positions are therefore solved one A-life level at a time,
-lowest first. A level's turns are compiled, solved, and dropped before the
-next level. The fixed point is unchanged; memory holds only one level's
-compiled turns, plus a 63-bit digest, the state and a value for every
-position. Digest collisions are ignored: for n positions they occur with
-probability about n²/2⁶⁴, around 10⁻⁵ at ten million.
+lowest first. A level's turns are compiled to a file, swept (alternately
+forwards and backwards) until no value changes, and deleted before the next
+level. The fixed point is unchanged. Digest collisions are ignored: for n
+positions they occur with probability about n²/2⁶⁴, around 10⁻⁵ at ten
+million.
+
+All per-position data lives on disk (`solver/disk.ml`), so memory stays
+bounded:
+- **Exploration** is a breadth-first search with duplicate detection on
+  disk. Each layer's successors are buffered, sorted into runs, merged, and
+  filtered against the sorted file of digests seen so far.
+- **A position** is its rank in the sorted digest file. The digests (8
+  bytes), the packed keys (32 bytes) and the values (4 bytes) are
+  memory-mapped files. Lookups use interpolation search, which takes only a
+  few probes because the digests are uniform.
+
+Anonymous memory is the sort buffer (`TCB_MEM` megabytes, 256 by default)
+plus a few words per position of the level being solved. The mapped pages
+are file-backed, so the kernel drops them under pressure instead of
+swapping. The solver works in `TCB_SAVE=DIR` if that is given; otherwise it
+uses a temporary directory under `TCB_WORK` (default `tables/`) and deletes
+it at the end.
+
+The solver runs on `TCB_JOBS` forked workers (default: one per processor;
+`solver/par.ml`). They share the mapped files:
+- **Exploration:** each worker expands a slice of the frontier into its own
+  sorted runs.
+- **Compiling:** each worker compiles a slice of the A-life level's turns.
+- **Sweeps:** workers sweep their slices concurrently, writing to the shared
+  values. The operator is monotone and starts at its bottom (or top), so
+  this chaotic iteration reaches the same fixed point. It stops after a
+  round in which no worker changed a value.
+- **Ranks:** the rounds stay synchronous.
+
+The two-Walker subgame (1.23M positions) takes 103 s on 14 workers, against
+753 s on one. Its saved table is byte-identical, and the workers peak at
+171 MB of anonymous memory in total.
 
 ## R5c. Macro moves for the protagonist (sound by restriction)
 
@@ -148,6 +180,8 @@ Elixir in hand.
 
 | two A Walkers³ | B-wins, macro B | B Walker 4, tt 10, A huge > 8 | A on 4 life: **B wins with B life ≥ 9** (1.23M; every legal A move, 2.32M) |
 | opening, A first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 5.9 h) |
+| same | B-wins, macro B | B Walker 4, tt 14, A huge > 14 | **B wins with B life ≥ 25** (47.8M positions, 2.7 h on 12 workers); the caps above were binding |
+| opening, B first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 6.1 h) |
 
 ³ A active; A: 3/3 and 3/3, no Thopters. B: a 3/3, no Thopters, Elixir in
 hand.
@@ -157,10 +191,14 @@ in synchronous rounds within each A-life level. B plays a move that keeps
 its value as of the previous round, so every turn makes progress: either A's
 life drops or the round count does. A plays a move that is worst for B.
 
-Solved tables can be written to disk with `TCB_SAVE=FILE`, plus
-`TCB_RANKS=1` to keep the rounds a line needs. `main fixload FILE [N [BLIFE]]`
-reloads one, prints the start value, and replays N turns. Tables live in
-`tables/`, which git ignores; they take about 40 bytes per position.
+A solved table is kept by solving with `TCB_SAVE=DIR`, plus `TCB_RANKS=1`
+to keep the rounds a line needs. `main fixload DIR [N [BLIFE]]` reopens one,
+prints the start value, and replays N turns. A table takes about 44 bytes
+per position, plus 16 per value change with ranks. Tables live in `tables/`,
+which git ignores. Old single-file tables are converted on first load, into
+`FILE.d`.
+`TCB_START=A` or `B` makes `fixload` look up that player's opening instead
+of the saved start, if the table reached it.
 
 A B win found this way is sound with no extra assumption beyond R3, R4 and
 Thopter monotonicity. Every value comes from a finite strategy: a cycle
