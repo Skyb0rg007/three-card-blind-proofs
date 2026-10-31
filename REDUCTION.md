@@ -88,7 +88,15 @@ instead.
   In every other combat the real Walker and the representative behave
   identically: it kills every Walker of at most `ot` counters and every
   Thopter, and survives anything below its size.
-- More than `tt` opposing Thopters counts as a loss for the protagonist.
+- More than `ott` opposing Thopters counts as a loss for the protagonist
+  (`TCB_OTT`, by default `tt`).
+
+  When B is the protagonist this rule can be made vacuous. A's Thopters
+  only come from its two Walkers dying, and A has no Elixir, so a dead
+  Walker never returns. A Walker that dies has at most `ot` counters (a huge
+  one dying is already a loss), so A never has more than `2 ot` Thopters
+  beyond those it starts with. With `ott` at least that, the rule never
+  fires and costs B nothing.
 
 ## R5. A's life pinned at 20 (B-safe only, sound by monotonicity)
 
@@ -102,11 +110,47 @@ monotonicity used here is `safe_bump` with `p = PA` (`theories/Mono.v`).
 
 A never gains life, so a turn only ends in a position with the same or
 lower A life. Positions are therefore solved one A-life level at a time,
-lowest first. A level's turns are compiled to a file, swept (alternately
-forwards and backwards) until no value changes, and deleted before the next
-level. The fixed point is unchanged. Digest collisions are ignored: for n
-positions they occur with probability about n²/2⁶⁴, around 10⁻⁵ at ten
-million.
+lowest first, each swept (alternately forwards and backwards) until no
+value changes. The fixed point is unchanged. Digest collisions are ignored:
+for n positions they occur with probability about n²/2⁶⁴, around 10⁻⁵ at
+ten million.
+
+**The levels share their turns (exact).** A's life enters a turn at one
+point only: combat damage on B's turn, at most once per turn, kills A when it
+reaches A's life. The damage itself does not depend on A's life, and no
+move, filter or cap does either. So the solver works with *bases*, turn-start
+keys with A's life left out. It explores bases (expanding each with A on
+20 life, which gives every successor of every level, since lower life only
+ends more lines), and compiles each base's turn once, with A on a life no
+turn can take. The damage step becomes a guard node that is a B win at any
+level up to the damage, and a turn start records its base and the damage A
+took on the way, so at level l it reads the position at level l − u. (A
+turn start after 20 or more damage is dead at every level; exploration never
+reached it and the guard always decides, so it gets a placeholder.) Every
+base is then solved at every level from 1 to A's starting life. That
+includes some combinations that can't be reached, but their values are
+still exact. On the opening, where nearly every base occurs at every level,
+exploration and compiling shrink by about the number of levels. The
+fortress and two-Walker tables come out identical position by position
+(`main fixcmp OLD NEW`).
+
+**Bounds from the level below (exact).** In the abstraction too, more life
+is never worse for A. By induction on the level: at level l + 1 a guard fires
+for fewer damages than at level l, and a turn start after damage u ≥ 1 reads
+level l + 1 − u, which by induction is at least as good for A as level l − u.
+So level l + 1's operator is at least as good for A as level l's, pointwise
+and monotonically, and so are its least and greatest fixed points. The value
+one level down therefore bounds each position's value:
+- When B's win or A's safety is sought, the bound is on the far side of
+  the fixed point (the best B could do, or the worst A could suffer). A
+  position whose value reaches it is final, and later sweeps skip it. That
+  includes every position already lost one level down. At the lowest level,
+  the extreme value (B needing 1 life; A losing) plays the same role.
+- When B's safety or A's win is sought, the bound is a closer start than
+  the extreme, and each level starts from it.
+The results are unchanged (`TCB_NOBOUND=1` turns this off for comparison).
+On the fortress the four checks need 2 to 6 times fewer turn evaluations,
+with identical values, history and lines.
 
 All per-position data lives on disk (`solver/disk.ml`), so memory stays
 bounded:
@@ -129,7 +173,7 @@ The solver runs on `TCB_JOBS` forked workers (default: one per processor;
 `solver/par.ml`). They share the mapped files:
 - **Exploration:** each worker expands a slice of the frontier into its own
   sorted runs.
-- **Compiling:** each worker compiles a slice of the A-life level's turns.
+- **Compiling:** each worker compiles a slice of the bases' turns.
 - **Sweeps:** workers sweep their slices concurrently, writing to the shared
   values. The operator is monotone and starts at its bottom (or top), so
   this chaotic iteration reaches the same fixed point. It stops after a
@@ -140,13 +184,71 @@ The two-Walker subgame (1.23M positions) takes 103 s on 14 workers, against
 753 s on one. Its saved table is byte-identical, and the workers peak at
 171 MB of anonymous memory in total.
 
+**Warm starts.** `TCB_FROM=TABLE` starts a win solve from a saved win table
+of the same check whose caps (`t`, `ot`, `tt`, `ott`, `lmax`) are no larger.
+The old table may also restrict more: a macro protagonist, or an opponent
+with every legal move (`TCB_FULLOPP=1`) where this run filters it. Both only
+make its values worse for the protagonist. A position the old table never
+reached (a protagonist Walker above the old `t`) starts lost. Each
+position starts at the old value of its image under the old caps (its
+Walkers clamped, its Thopters cut, a loss if the opponent has too many).
+That value is never better than the new fixed point: raising a protagonist
+cap adds options (R3), and raising an opponent cap moves R4's losses further
+out, while a formerly huge Walker behaves either as its representative did or
+in a way the old abstraction already counted as a loss. Sweeps then keep only
+changes for the better. The iteration stays on the pessimistic side of the
+fixed point. When a round changes nothing, every value is at least as good
+as one step from the current values, and any such point is at least as good
+as the fixed point; being no better either, it is the fixed point. So the result is exactly the cold
+solve's, which the tests confirm: the fortress (8/8 to 10/10) and the
+two-Walker subgame (6/8 to 8/10, where the start value moves from "never" to
+B life ≥ 9) give byte-identical values with about half the sweeps. Ranks
+can't be numbered from a warm start, so `TCB_FROM` excludes `TCB_RANKS`.
+
 ## R5c. Macro moves for the protagonist (sound by restriction)
 
-`TCB_MACRO=1` restricts B, as protagonist, to `Reduce.b_macro`. For each
+`TCB_MACRO=1` restricts the protagonist to its macro move set:
+`Reduce.b_macro` for B, `Reduce.a_macro` for A. A's macro attacks with no
+Walker, every Walker, or its smallest or biggest one alone (with two Walkers
+that is every subset), with no Thopters or all of them, and at B's end step
+pumps only its biggest Walker; it also keeps two damage orders and the two
+extreme damage assignments. For B, for each
 attacking Walker, B can block with nothing, its own Walker, one chump
 Thopter, or enough Thopters to kill it. Thopter trades are all or nothing.
 Restricting the protagonist is always sound. On the fortress it shrinks the
 compiled turns 4.4× and gives the same result.
+
+The macro does cost B something in the opening. With A first, B Walker cap
+4, `tt` = `ot` = `ott` = 10, B never wins either way, but full B moves make
+2.55M of the macro table's 17.0M positions better for B (243k of them go from
+lost to won, and most of the rest by 1–6 life). Full moves cost 1.5× the
+bases and 6.9× the compiled program words. `TCB_BMACRO` lists which of B's
+restrictions apply (`blk`, `tr`, `atk`, `dmg`; default all) so that each one's
+cost can be measured. A table records the list, and a warm start needs the
+old table's list to include the new one's. `atkN` relaxes `atk`: B attacks
+with no Thopters, or with all but at most N. Positions of the macro table
+that are still worse for B than with full moves, at the caps above:
+
+| B's restrictions | still worse than full | bases | program words |
+|---|---|---|---|
+| all four (the macro) | 2,551,468 | 849k | 0.27G |
+| all but `blk` | 2,550,648 | 849k | 0.43G |
+| all but `tr` | 2,320,630 | 849k | 0.29G |
+| all but `dmg` | 2,551,468 | 849k | 0.28G |
+| all but `atk` | 284,182 | 1.29M | 1.07G |
+| `blk,atk1,dmg` | 1,001,415 | 939k | 0.46G |
+| `blk,atk2,dmg` | 381,644 | 1.02M | 0.61G |
+| none (full moves) | 0 | 1.29M | 1.83G |
+
+Nearly all of the cost is the attack rule: B wants to keep a few Thopters
+home as blockers. `blk,atk2,dmg` recovers 85% of it for 2.25× the program.
+
+A's macro has the same shape. `TCB_AMACRO` lists A's restrictions (`atk` or
+`atkN`, `pump`, `order`, `dmg`; default all). For A-safe from the A-first
+opening at 6/6, full A moves raise the start value from B life ≤ 12 to
+≤ 13 and improve 750k of 4.95M positions, for 2.25× the program. Dropping
+`atk` alone recovers all but 49k; `atk2,pump,order,dmg` reaches 13 with 112k
+left, for 1.46× the program; `atk1` reaches 13 with 216k left, for 1.23×.
 
 ## R6. The exploration filter
 
@@ -157,8 +259,43 @@ restriction, which is sound. For the opponent it must be justified by
 dominance lemmas or replaced by `Rules.moves` before a certificate counts.
 For the B wins in the results below it has been replaced: every one of them
 was re-solved with `TCB_FULLOPP=1` (A gets every move in `Rules.moves`) and
-came out the same, so they don't depend on R6. The dominance lemmas are
-still open, and matter only for runs that keep the filter.
+came out the same, so they don't depend on R6.
+
+Written dominance arguments for the opponent. Each removed move m is matched
+by a kept plan that leaves the opponent at least as well off. In the cases
+marked *mimic*, the opponent delays the action. In between, the plan keeps
+an untapped Walker (or unspent card) that it simply doesn't use, and then
+acts at the kept window, reaching the same state. The interim difference
+can't matter: a Walker tapped by a pump can't attack or block, so its extra
+counter is never seen until the delayed pump adds it too.
+- **Pumps on your own turn** (any window). The Walker stays tapped through
+  the opponent's turn, so it can't block there. Delaying to the opponent's
+  end step uses the same City activation of the round, since City untaps
+  only in its controller's untap step. *Mimic.* (Attacking Walkers are
+  already tapped and can't pump.)
+- **Pumps on the opponent's turn before blocks** tap the Walker, so it can't
+  block; **pumps of a non-blocking Walker after blocks or in later combat
+  steps** don't affect combat. Delay to the end step. *Mimic.* The exception
+  is mana left over from an earlier pump in the same step: it empties
+  before the end step. The filter keeps any pump after blocks while mana is
+  left over. Earlier versions of the filter did not, so they took a free
+  counter from A. The four B wins above were re-solved with every legal
+  move, so they are unaffected.
+- **Casting in main phase 1** instead of main phase 2. A Walker is summoning
+  sick either way, and the cast before combat only gives the opponent
+  information and taps City before blocks. *Mimic.*
+- **X = 0** puts the Walker straight into the graveyard. For A, which has no
+  Elixir, that only loses the card: keeping it in hand is at least as good.
+  For B it is a real option, since Elixir shuffles the graveyard back into
+  the library; B's X = 0 is kept only in `TCB_FULLOPP` runs, and for B as
+  protagonist dropping it is a restriction.
+- **Elixir on your own turn after upkeep**, and **on the opponent's turn
+  before blocks**. Delay to the opponent's next blocks or end step. The life
+  arrives before any damage it could prevent, and the shuffle still comes
+  before B's next draw. *Mimic.* Upkeep is different: shuffling before the
+  draw step lets B draw a shuffled-in card that turn, so it is kept.
+These arguments are written, not mechanized. Every B win that counts is
+still re-solved with `TCB_FULLOPP=1`.
 
 ## Results so far
 
@@ -181,6 +318,26 @@ Elixir in hand.
 | two A Walkers³ | B-wins, macro B | B Walker 4, tt 10, A huge > 8 | A on 4 life: **B wins with B life ≥ 9** (1.23M; every legal A move, 2.32M) |
 | opening, A first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 5.9 h) |
 | same | B-wins, macro B | B Walker 4, tt 14, A huge > 14 | **B wins with B life ≥ 25** (47.8M positions, 2.7 h on 12 workers); the caps above were binding |
+| same | B-wins, macro B | B Walker 4, tt 18, A huge > 18 | **B wins with B life ≥ 25** (117M positions = 5.86M bases × 20 A-life levels, 2.0 h on 14 workers, warm-started from the row above). 8.8M of the 47.8M positions above gain value for B (5.1M of them go from lost to won), none lose any; they are mostly positions where A has 11–14 Thopters. The start value does not move. |
+| same | B-wins, B macro `blk,atk2,dmg` | B Walker 4, tt 14, A huge > 14 | **B wins with B life ≥ 25** (59.4M positions = 2.97M bases × 20, 43 min on 14 workers, warm-started from the 14/14 macro table). 6.1M of that table's positions improve for B; the start value does not move. |
+| opening, A first | A-safe, A macro | 6/6 | **A safe with B life ≤ 12** (4.95M positions, 41 s); A-win gives the same value |
+| same | A-safe, A macro | 10/10 | **A safe with B life ≤ 15** (36.1M positions, 26 min). Raising one cap alone from 6/6 to 10 gives 12 (`t`, `tt`, `ott`) or 13 (`ot`): the caps only help together. |
+| same | A-wins, A macro `atk2,pump,order,dmg` | 10/10 | **A wins with B life ≤ 15** (40.7M positions, 71 min); the same as A-safe |
+| same | A-wins | t 6, tt 6, ott 6, B huge > 6 / 10 / 14 | B life ≤ 13 / **15** / **15**; with B huge > 10 also 15 with A's filter instead of the macro, and 15 with every legal A move (`TCB_FULLMINE=1`, 823k bases). Relaxing every R4 rule (unsound) at 6/6 gives 15 too. |
+| same | A-wins, A macro `atk2,…`, **every legal B move** (`TCB_FULLOPP=1`) | t 6, tt 6, ott 6, B huge > 10 | **A wins with B life ≤ 15** (12.0M positions, 10 min). Sound: B is unrestricted, and A's restrictions and caps only weaken A. |
+| opening, B first | A-wins, as above, every legal B move | t 6, tt 6, ott 6, B huge > 10 | **A wins with B life ≤ 10** (12.0M positions, 10 min). Sound. |
+
+**What the A-first numbers say.** A's win stops at B life 15 whatever is
+relaxed on A's side (caps, macro, filter, R4). Only B's filter is left, and
+lifting it can only lower the value. B's win stops at 25 under every change
+tried on B's side (caps 14 and 18, the macro and `atk2`). So the real
+thresholds are very likely A wins iff B life ≤ 15 and B wins iff B life ≥ 25:
+from the real start, at B life 20, **neither player can force a win**. To
+prove it, the safety checks must reach 20: A-safe with B life ≥ 20 (so B
+can't win) and B-safe with B life ≤ 20 (so A can't). With capped Walkers
+and Thopters both checks collapse onto the win checks (A-safe = A-win = 15 at
+6/6 and 10/10), because a long game always reaches a cap and the cap is a
+loss for the protagonist. This is the growth equilibrium described below.
 | opening, B first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 6.1 h) |
 
 ³ A active; A: 3/3 and 3/3, no Thopters. B: a 3/3, no Thopters, Elixir in

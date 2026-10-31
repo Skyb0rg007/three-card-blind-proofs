@@ -233,20 +233,22 @@ let () =
 (* Fixed points on the finite abstraction (Fix):
    fix safe|win A|B T TT LMAX STARTER; pfix safe|win A|B T TT LMAX <position as for pwin> *)
 let () =
-  let cfg who t ot tt lmax ~fulla ~macro ~fullopp =
-    { Fix.prot = pl who; t; ot; tt; lmax;
+  let cfg who t ot tt ott lmax ~fulla ~macro ~fullopp =
+    { Fix.prot = pl who; t; ot; tt; ott; lmax;
       full_a = pl who = PB && fulla;
-      (* macro: the protagonist (B) only uses the macro move set (a sound restriction) *)
-      mine = (if macro then Reduce.b_macro else Reduce.moves);
+      (* macro: the protagonist only uses its macro move set (a sound
+         restriction); TCB_FULLMINE=1 gives it every legal move instead *)
+      mine = (if Sys.getenv_opt "TCB_FULLMINE" = Some "1" then Rules.moves
+              else if not macro then Reduce.moves else if pl who = PB then Reduce.b_macro else Reduce.a_macro);
       (* fullopp: the opponent gets every legal move, not just the filter's *)
       theirs = (if fullopp then Rules.moves else Reduce.moves) }
   in
   let flag v = Sys.getenv_opt v = Some "1" in
   let run mode who t tt lmax s0 =
     let t = int_of_string t and tt = int_of_string tt and lmax = int_of_string lmax in
-    let ot = env_int "TCB_OT" t and fulla = flag "TCB_FULLA" and macro = flag "TCB_MACRO"
+    let ot = env_int "TCB_OT" t and ott = env_int "TCB_OTT" tt and fulla = flag "TCB_FULLA" and macro = flag "TCB_MACRO"
     and fullopp = flag "TCB_FULLOPP" in
-    let c = cfg who t ot tt lmax ~fulla ~macro ~fullopp in
+    let c = cfg who t ot tt ott lmax ~fulla ~macro ~fullopp in
     let t0 = Unix.gettimeofday () in
     (* TCB_LINE=N prints N turns of a line of play; TCB_RANKS=1 or TCB_LINE
        computes the rounds a line needs *)
@@ -259,17 +261,51 @@ let () =
       | None ->
         let base = Option.value (Sys.getenv_opt "TCB_WORK") ~default:"tables" in
         Filename.concat base (Printf.sprintf ".work-%d" (Unix.getpid ())) in
-    let sv = if mode = "safe" then Fix.safe c s0 dir else Fix.win ~ranks c s0 dir in
+    let b i = if i then "1" else "0" in
+    (* TCB_FROM=TABLE warm-starts a win from a table of the same check that
+       is no better for the protagonist: caps no larger, and if anything a
+       macro protagonist or an opponent with every legal move *)
+    let warm = match Sys.getenv_opt "TCB_FROM" with
+      | None -> None
+      | Some p ->
+        let h, wsv = Fix.load p in
+        let g k = List.assoc k h in
+        let gi k = int_of_string (g k) in
+        let gott = match List.assoc_opt "ott" h with Some v -> int_of_string v | None -> gi "tt" in
+        let same k v = if g k <> v then failwith (Printf.sprintf "TCB_FROM: %s has %s=%s, not %s" p k (g k) v) in
+        same "mode" mode; same "who" who; same "fulla" (b fulla);
+        (* restrictions the old table may have had but this run drops *)
+        let lifted k v = if v && g k = "0" then failwith (Printf.sprintf "TCB_FROM: %s has %s=0, this run 1" p k) in
+        lifted "macro" macro; lifted "fullopp" fullopp;
+        (* the protagonist's macro: the old table's restrictions must
+           include this run's (old tables without the list had them all) *)
+        if macro then begin
+          let key, mine, all = if who = "B" then ("bmacro", Reduce.b_macro_rules, [ "blk"; "tr"; "atk"; "dmg" ])
+            else ("amacro", Reduce.a_macro_rules, [ "atk"; "pump"; "order"; "dmg" ]) in
+          let rules = match List.assoc_opt key h with Some l -> String.split_on_char ',' l | None -> all in
+          (* atkN restricts more the smaller N is; atk is atk0 *)
+          let covered r = match Reduce.held_of r with
+            | Some n -> List.exists (fun r' -> match Reduce.held_of r' with Some m -> m <= n | None -> false) rules
+            | None -> List.mem r rules in
+          List.iter (fun r -> if not (covered r) then
+                        failwith (Printf.sprintf "TCB_FROM: %s lacks macro rule %s" p r)) mine
+        end;
+        if ranks then failwith "TCB_FROM: a warm start has no ranks (drop TCB_RANKS and TCB_LINE)";
+        if mode <> "win" || gi "t" > t || gi "ot" > ot || gi "tt" > tt || gott > ott || gi "lmax" > lmax then
+          failwith "TCB_FROM: needs a win table with caps no larger than this run's";
+        Some { Fix.wc = cfg who t (gi "ot") (gi "tt") gott (gi "lmax") ~fulla ~macro ~fullopp; wsv }
+    in
+    let sv = if mode = "safe" then Fix.safe c s0 dir else Fix.win ~ranks ?warm c s0 dir in
     Printf.printf "%s %s from the start position: %s  (%.1fs)\n%!" who mode (Fix.show c (Fix.value c sv s0))
       (Unix.gettimeofday () -. t0);
     if n > 0 then Fix.line c sv s0 s0.sideB.life n;
     match Sys.getenv_opt "TCB_SAVE" with
     | Some path ->
-      let b i = if i then "1" else "0" in
       Fix.save_meta sv
         [ ("mode", mode); ("who", who); ("t", string_of_int t); ("ot", string_of_int ot);
-          ("tt", string_of_int tt); ("lmax", string_of_int lmax); ("fulla", b fulla);
-          ("macro", b macro); ("fullopp", b fullopp); ("blife", string_of_int s0.sideB.life);
+          ("tt", string_of_int tt); ("ott", string_of_int ott); ("lmax", string_of_int lmax); ("fulla", b fulla);
+          ("macro", b macro); ("bmacro", String.concat "," Reduce.b_macro_rules);
+          ("amacro", String.concat "," Reduce.a_macro_rules); ("fullopp", b fullopp); ("blife", string_of_int s0.sideB.life);
           ("start", Fix.hex (Fix.key_gen c.full_a s0)) ];
       Printf.printf "saved %d positions to %s\n%!" sv.n path
     | None -> Fix.remove sv
@@ -283,7 +319,8 @@ let () =
     let h, sv = Fix.load path in
     let g k = List.assoc k h in
     let gi k = int_of_string (g k) in
-    let c = cfg (g "who") (gi "t") (gi "ot") (gi "tt") (gi "lmax") ~fulla:(g "fulla" = "1")
+    let ott = match List.assoc_opt "ott" h with Some v -> int_of_string v | None -> gi "tt" in
+    let c = cfg (g "who") (gi "t") (gi "ot") (gi "tt") ott (gi "lmax") ~fulla:(g "fulla" = "1")
         ~macro:(g "macro" = "1") ~fullopp:(g "fullopp" = "1") in
     let s0 = match Sys.getenv_opt "TCB_START" with
       | Some p -> init (pl p)
@@ -295,10 +332,33 @@ let () =
     Printf.printf "%s: %s %s, %d positions; start position: %s\n" path (g "who") (g "mode") sv.Fix.n
       (Fix.show c v);
     if n > 0 then
-      if Fix.has_ranks sv then Fix.line c sv s0 life n
-      else print_endline "(no ranks saved: re-solve with TCB_RANKS=1 to print lines)"
+      begin
+        if not (Fix.has_ranks sv) then
+          print_endline "(no ranks saved: this line keeps values but may not make progress; re-solve with TCB_RANKS=1 for one that does)";
+        Fix.line c sv s0 life n
+      end
+  in
+  (* fixcmp OLD NEW: every position of table OLD has the same value in NEW *)
+  let compare_tables a b =
+    let _, sa = Fix.load a and _, sb = Fix.load b in
+    let missing = ref 0 and differ = ref 0 in
+    (* TCB_DIFFS=FILE lists the differing positions: OLD's index and both values *)
+    let diffs = Option.map Disk.out (Sys.getenv_opt "TCB_DIFFS") in
+    for i = 0 to sa.Fix.n - 1 do
+      match Fix.id sb (Fix.key_at sa i) with
+      | j ->
+        let va = Fix.get sa i and vb = Fix.get sb j in
+        if va <> vb then begin
+          incr differ;
+          Option.iter (fun oc -> List.iter (Disk.output_int32 oc) [ i; va; vb ]) diffs
+        end
+      | exception Not_found -> incr missing
+    done;
+    Option.iter close_out diffs;
+    Printf.printf "%d positions of %s: %d differ in %s, %d missing from it\n" sa.Fix.n a !differ b !missing
   in
   match Sys.argv with
+  | [| _; "fixcmp"; a; b |] -> compare_tables a b
   | [| _; "fix"; mode; who; t; tt; lmax; starter |] -> run mode who t tt lmax (init (pl starter))
   | [| _; "fixload"; path |] -> load path 0 None
   | [| _; "fixload"; path; n |] -> load path (int_of_string n) None

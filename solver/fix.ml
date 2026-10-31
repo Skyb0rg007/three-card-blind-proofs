@@ -17,7 +17,7 @@
      "huge" (kept at t+1), and anything whose outcome would depend on its
      exact size counts as a loss for the protagonist: it dealing damage to the
      protagonist, it dying (its Thopters are unbounded), or being blocked by
-     more toughness than t+1. More than [tt] opposing Thopters is also a loss.
+     more toughness than t+1. More than [ott] opposing Thopters is also a loss.
 
    [safe] computes a greatest fixed point (the protagonist never loses), [win]
    a least one (it wins). Thresholds are cut to [lmax] on the pessimistic
@@ -34,7 +34,8 @@ type cfg = {
   prot : player;
   t : int;   (* the protagonist's Walkers stop at t counters *)
   ot : int;  (* the opponent's Walkers are huge above ot counters *)
-  tt : int;
+  tt : int;   (* the protagonist's Thopters above tt are discarded *)
+  ott : int;  (* more than ott opposing Thopters is a loss *)
   lmax : int;
   full_a : bool;  (* B protagonist only: A's life is reset to 20 at each turn start *)
   mine : state -> move list;
@@ -167,7 +168,7 @@ let huge_event c s m =
   | _ -> false
 
 let too_many c s =
-  (not (List.mem "many" lax)) && let os = side_of (opp c.prot) s in os.thop_u + os.thop_t > c.tt
+  (not (List.mem "many" lax)) && let os = side_of (opp c.prot) s in os.thop_u + os.thop_t > c.ott
 
 let moves_for c s =
   if to_move s = c.prot then
@@ -220,11 +221,20 @@ let eval_turn c lookup s = eval_from c lookup s true
    0 for the protagonist) and n children of two words each: x, then
    4d + kind, where d is the change in B's life on that edge and kind is
    0 for a constant (x = 0 for ninf, 1 for inf), 1 for node number x, 2 for
-   turn start x (an index given by [id]). Single-child nodes are inlined and
-   children that can never be picked are dropped. *)
+   turn start x (given by [tgt]). Single-child nodes are inlined and
+   children that can never be picked are dropped.
+
+   A's life only matters at one point of a turn: combat damage to A, after
+   which A is dead if the damage reached its life. Turns are compiled with
+   A on [sent] life, which no turn can take, and the damage step gets a
+   guard node: its header carries the damage u (header lsr 16), and at an
+   A-life level of at most u the node is a win for B. The header's low bits
+   are 2n + pick as usual. *)
 type cref = Const of int | Ref of int * int * int  (* kind, x, d *)
 
-let compile c (id : string -> int) s =
+let sent = 100
+
+let compile c (tgt : state -> int) s =
   let local = Hashtbl.create 256 in
   let buf = ref [] and nodes = ref 0 in
   let lost = if lose c = ninf then 0 else 1 in
@@ -234,7 +244,7 @@ let compile c (id : string -> int) s =
     | Some PB -> Const 0
     | Some PA -> assert false
     | None ->
-      if (not root) && Search.is_turn_start s then Ref (2, id (key_gen c.full_a s), 0)
+      if (not root) && Search.is_turn_start s then Ref (2, tgt s, 0)
       else begin
         let k = key s in
         match Hashtbl.find_opt local k with
@@ -251,6 +261,7 @@ let compile c (id : string -> int) s =
               | [] -> Const useless
               | [ r ] -> r
               | kids ->
+                assert (List.length kids < 0x8000);
                 buf := ((2 * List.length kids) + if mine then 0 else 1) :: !buf;
                 List.iter (function
                     | Ref (kind, x, d) -> buf := ((4 * d) + kind) :: x :: !buf
@@ -267,14 +278,23 @@ let compile c (id : string -> int) s =
       let s' = clamp c (step s m) in
       if too_many c s' then Const lost
       else
-        let d = s'.sideB.life - s.sideB.life in
+        let d = s'.sideB.life - s.sideB.life and u = s.sideA.life - s'.sideA.life in
+        assert (u = 0 || d = 0);
         let wrap kind x d' = buf := ((4 * d') + kind) :: x :: 2 :: !buf; incr nodes; Ref (1, !nodes - 1, d) in
-        match go s' false with
-        | Const v when d >= 0 -> Const v  (* constants are sentinels: shifts don't move them *)
-        | Const v -> wrap 0 v 0  (* but B may die on this edge *)
-        | Ref (kind, x, 0) -> Ref (kind, x, d)
-        | Ref (kind, x, d') when d = 0 -> Ref (kind, x, d')
-        | Ref (kind, x, d') -> wrap kind x d'  (* two life changes on one path: the inner one gets its own node *)
+        let r =
+          match go s' false with
+          | Const v when d >= 0 -> Const v  (* constants are sentinels: shifts don't move them *)
+          | Const v -> wrap 0 v 0  (* but B may die on this edge *)
+          | Ref (kind, x, 0) -> Ref (kind, x, d)
+          | Ref (kind, x, d') when d = 0 -> Ref (kind, x, d')
+          | Ref (kind, x, d') -> wrap kind x d'  (* two life changes on one path: the inner one gets its own node *)
+        in
+        (* combat damage to A: a guard node *)
+        match r with
+        | _ when u = 0 -> r
+        | Const 0 -> r
+        | Const v -> buf := 0 :: v :: ((u lsl 16) lor 2) :: !buf; incr nodes; Ref (1, !nodes - 1, 0)
+        | Ref (kind, x, d') -> buf := ((4 * d') + kind) :: x :: ((u lsl 16) lor 2) :: !buf; incr nodes; Ref (1, !nodes - 1, 0)
   in
   let root = go s true in
   (* make sure the program ends with the root node *)
@@ -292,8 +312,9 @@ let compile c (id : string -> int) s =
 let to32 v = if v <= ninf then -0x40000000 else if v >= inf then 0x3fffffff else v
 let of32 v = if v = -0x40000000 then ninf else if v = 0x3fffffff then inf else v
 
-(* Evaluate the program of [nodes] nodes at word [off] of [prog]. *)
-let run c (value : int -> int) prog off nodes =
+(* Evaluate the program of [nodes] nodes at word [off] of [prog], at A-life
+   level [l]. *)
+let run c l (value : int -> int) prog off nodes =
   let get i = Int32.to_int (Bigarray.Array1.unsafe_get prog (off + i)) in
   let nv = Array.make nodes 0 in
   let pc = ref 0 in
@@ -301,7 +322,7 @@ let run c (value : int -> int) prog off nodes =
     let h = get !pc in
     let mine = h land 1 = 0 in
     let pick = if mine then best c else worst c in
-    let cnt = h lsr 1 in
+    let cnt = (h lsr 1) land 0x7fff and guard = h lsr 16 in
     incr pc;
     let acc = ref (if mine then lose c else if up c then ninf else inf) in
     for _ = 1 to cnt do
@@ -313,14 +334,19 @@ let run c (value : int -> int) prog off nodes =
       let v = if d < 0 then (if up c then max (1 - d) v else max (-d) v) else v in
       acc := pick !acc v
     done;
-    nv.(n) <- !acc
+    nv.(n) <- (if guard > 0 && l <= guard then ninf else !acc)
   done;
   nv.(nodes - 1)
 
 (* The solver's state lives in a directory of files:
-   - dig: the positions' digests, sorted; a position's index is its rank here;
-   - keys: per position, a 32-byte record: key length, packed key, padding;
-   - vals: per position, its value (int32);
+   - dig: the bases' digests, sorted; a base's index is its rank here. A base
+     is a turn-start key with A's life (key byte 1) zeroed;
+   - keys: per base, a 32-byte record: key length, packed key, padding;
+   - vals: per position, its value (int32). Position i is base i mod nb at
+     A-life level slot i / nb: levels 1 to nl, A's life at the start, or
+     just 20 when A's life is pinned (nl = 1). Every base is a position at every level:
+     turns only differ across levels in whether combat damage kills A, so
+     the levels share the bases' compiled turns;
    - hist (with ranks): (key, value) pairs of int64, key = index lsl 24 lor
      round, sorted: the rounds at which each value changed;
    - meta (saved tables): the header.
@@ -331,7 +357,10 @@ let rsize = 32
 
 type solver = {
   dir : string;
-  n : int;
+  n : int;   (* positions *)
+  nb : int;  (* bases *)
+  nl : int;  (* levels; 0 for a legacy table, whose positions are its bases *)
+  pinned : bool;  (* A's life pinned at 20: one level *)
   dig : (int64, Bigarray.int64_elt, Bigarray.c_layout) Bigarray.Array1.t;
   keys : (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t;
   vals : (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t;
@@ -341,7 +370,14 @@ type solver = {
 let mem = (match Sys.getenv_opt "TCB_MEM" with Some m -> int_of_string m | None -> 256) * 1_000_000
 
 let path sv name = Filename.concat sv.dir name
-let key_at sv i = let o = i * rsize in String.init (Char.code sv.keys.{o}) (fun j -> sv.keys.{o + 1 + j})
+let base_key_at sv b = let o = b * rsize in String.init (Char.code sv.keys.{o}) (fun j -> sv.keys.{o + 1 + j})
+let with_life k l = let b = Bytes.of_string k in Bytes.set b 1 (Char.chr l); Bytes.to_string b
+let base_of k = with_life k 0
+let life_of_slot sv k = if sv.pinned then 20 else k + 1
+
+(* The key of position [i]. *)
+let key_at sv i =
+  if sv.nl = 0 then base_key_at sv i else with_life (base_key_at sv (i mod sv.nb)) (life_of_slot sv (i / sv.nb))
 let get sv i = of32 (Int32.to_int sv.vals.{i})
 let set sv i v = sv.vals.{i} <- Int32.of_int (to32 v)
 
@@ -367,29 +403,52 @@ let find sv d =
         let x = dg m in
         if x = d then m else if x < d then interp (m + 1) b (steps - 1) else interp a (m - 1) (steps - 1)
   in
-  interp 0 (sv.n - 1) 8
+  interp 0 (sv.nb - 1) 8
 
-let id sv k = find sv (Tsearch.digest_key k)
+(* Index of the position with key [k]. *)
+let id sv k =
+  if sv.nl = 0 then find sv (Tsearch.digest_key k)
+  else
+    let slot = if sv.pinned then 0 else Char.code k.[1] - 1 in
+    (slot * sv.nb) + find sv (Tsearch.digest_key (base_of k))
 
-let level_file dir l = Filename.concat dir (Printf.sprintf "level-%02d" l)
+(* A warm start for [win]: a table solved for the same check, with caps no
+   larger than [c]'s. Raising a cap only removes pessimism: a larger
+   protagonist cap adds options (Thopter monotonicity), and a larger opponent
+   cap moves the huge and too-many losses further out, while a Walker that
+   was huge before behaves either as its representative did or so that the
+   old abstraction counted a loss. So the old value of a position, read
+   through the old abstraction (clamped to the old caps), is still achieved
+   under the new one: it is never better than the new fixed point. *)
+type warm = { wc : cfg; wsv : solver }
 
-(* Map the arrays of a solver directory with [n] positions. *)
-let open_dir dir n ~write =
+let warm_value c w s =
+  if too_many w.wc s then lose c
+  else
+    match id w.wsv (key_gen c.full_a (clamp w.wc s)) with
+    | i -> norm c (get w.wsv i)
+    | exception Not_found -> lose c
+
+(* Map the arrays of a solver directory with [nb] bases and [nl] levels. *)
+let open_dir ?(pinned = false) dir ~nb ~nl ~write =
+  let n = if nl = 0 then nb else nl * nb in
   let hist =
     let p = Filename.concat dir "hist" in
     if Sys.file_exists p && Disk.count p 16 > 0 then Some (Disk.map Bigarray.int64 p (2 * Disk.count p 16) ~write:false)
     else None
   in
-  { dir; n;
-    dig = Disk.map Bigarray.int64 (Filename.concat dir "dig") n ~write:false;
-    keys = Disk.map Bigarray.char (Filename.concat dir "keys") (n * rsize) ~write:false;
+  { dir; n; nb; nl; pinned;
+    dig = Disk.map Bigarray.int64 (Filename.concat dir "dig") nb ~write:false;
+    keys = Disk.map Bigarray.char (Filename.concat dir "keys") (nb * rsize) ~write:false;
     vals = Disk.map Bigarray.int32 (Filename.concat dir "vals") n ~write;
     hist }
 
-(* Turn-start positions reachable from [s0] in the abstraction, by
-   breadth-first search with duplicate detection on disk. Each layer's
-   successors are sorted in runs, merged, and filtered against the sorted
-   file of positions seen so far. A record is a digest and a key record. *)
+(* The bases reachable from [s0]'s, by breadth-first search with duplicate
+   detection on disk. Each layer's successors are sorted in runs, merged, and
+   filtered against the sorted file of bases seen so far. A record is a
+   digest and a key record. A base is expanded with A on 20 life: at lower
+   life A can only die sooner, so that gives every successor base of every
+   level. *)
 let reach c s0 dir =
   (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let p = Filename.concat dir in
@@ -403,7 +462,7 @@ let reach c s0 dir =
     Bytes.blit_string k 0 record 9 (String.length k)
   in
   let layer i = p (Printf.sprintf "layer-%d" i) in
-  let k0 = key_gen c.full_a s0 in
+  let k0 = base_of (key_gen c.full_a s0) in
   fill k0;
   let oc = Disk.out (layer 0) in output oc record 0 size; close_out oc;
   let oc = Disk.out (p "visited") in Disk.output_key oc (Tsearch.digest_key k0); close_out oc;
@@ -417,11 +476,12 @@ let reach c s0 dir =
         let runs = Disk.runs ~base:(p (Printf.sprintf "run-%d" j)) ~size ~mem:(mem / Par.jobs) in
         let seen = Hashtbl.create 64 in
         Disk.iter_range (layer !depth) size lo hi (fun b ->
-            let k = Bytes.sub_string b 9 (Char.code (Bytes.get b 8)) in
+            let k = with_life (Bytes.sub_string b 9 (Char.code (Bytes.get b 8))) 20 in
             let s = of_key k in
             assert (key_gen c.full_a s = k);  (* the packing round-trips *)
             Hashtbl.reset seen;
             ignore (eval_turn c (fun k' ->
+                let k' = base_of k' in
                 if not (Hashtbl.mem seen k') then begin Hashtbl.add seen k' (); fill k'; Disk.push runs record 0 end;
                 0) s));
         Disk.flush runs;
@@ -447,29 +507,23 @@ let reach c s0 dir =
     total := !total + !fresh;
     Printf.printf "  reach: layer %d, %d expanded, %d found (%.1fs)\n%!" !depth cnt !total (Unix.gettimeofday () -. t0)
   done;
-  (* all layers, merged in digest order: the key records and, per A-life
-     level, the indices of its positions *)
+  (* all layers, merged in digest order: the key records *)
   let layers = List.init (!depth + 1) layer in
   let ko = Disk.out (p "keys") in
-  let lo = Array.make 21 None in
   let rank = ref 0 in
-  Disk.merge layers size (fun b ->
-      output ko b 8 rsize;
-      let l = Char.code (Bytes.get b 10) in  (* A's life: the first byte of A's side *)
-      let oc = match lo.(l) with Some oc -> oc | None -> let oc = Disk.out (level_file dir l) in lo.(l) <- Some oc; oc in
-      Disk.output_int32 oc !rank;
-      incr rank);
+  Disk.merge layers size (fun b -> output ko b 8 rsize; incr rank);
   close_out ko;
-  Array.iter (Option.iter close_out) lo;
   List.iter Disk.remove layers;
   assert (!rank = !total);
   Sys.rename (p "visited") (p "dig");
-  let n = !total in
+  (* A never gains life: the levels run up to its life at the start *)
+  let nb = !total and nl = if c.full_a then 1 else s0.sideA.life in
+  let n = nl * nb in
   let fd = Unix.openfile (p "vals") [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
   Unix.ftruncate fd (4 * n); Unix.close fd;
   Disk.remove (p "hist");
   Printf.printf "  reach: %d layers\n%!" !depth;
-  open_dir dir n ~write:true
+  open_dir ~pinned:c.full_a dir ~nb ~nl ~write:true
 
 let read_int32s path =
   let ic = open_in_bin path in
@@ -484,117 +538,191 @@ let read_int32s path =
    A-life level at a time, lowest first: a level's turns only end in its own
    level or in lower, already solved ones.
 
-   Each level is split into slices, one per worker. The workers compile
-   their slices' turns to files, then sweep them (alternately forwards and
+   The bases are split into slices, one per worker. The workers compile
+   their slices' turns to files once; then, level by level, they sweep them (alternately forwards and
    backwards) in rounds, all writing to the shared value map, until a round
    changes nothing. Reading values that other workers are changing is fine:
    the operator is monotone and the iteration starts at its bottom (or top),
    so every value read lies between the start and the fixed point, and
    this chaotic iteration reaches the same fixed point. With ranks the rounds
    are synchronous instead: each round's values are computed from the
-   previous round's. *)
-let solve ?(ranks = false) c sv ~start =
+   previous round's.
+
+   With [warm] (least fixed points only), values start from the warm table
+   instead, and a sweep only keeps a change for the better. The start lies
+   on the pessimistic side of the fixed point, every update keeps it there,
+   and when a round changes nothing each value is at least as good as one
+   step from the others: from such a point the iteration from the true
+   start can only arrive below it, so the two coincide. Rounds cannot be
+   numbered from a warm start, so it excludes ranks. *)
+let solve ?(ranks = false) ?warm c sv ~start =
   let n = sv.n in
-  for i = 0 to n - 1 do set sv i start done;
+  (match warm with
+   | None -> for i = 0 to n - 1 do set sv i start done
+   | Some w ->
+     if ranks then invalid_arg "solve: a warm start has no ranks";
+     let t0 = Unix.gettimeofday () in
+     let nw = Par.workers n 4096 in
+     let good = Par.map ~dir:sv.dir nw (fun k ->
+         let lo, hi = Par.chunk n nw k in
+         let good = ref 0 in
+         for i = lo to hi - 1 do
+           let v = warm_value c w (of_key (key_at sv i)) in
+           set sv i v;
+           if v <> lose c then incr good
+         done;
+         !good) in
+     Printf.printf "  warm start: %d of %d positions not lost (%.1fs)\n%!" (Array.fold_left ( + ) 0 good) n
+       (Unix.gettimeofday () -. t0));
+  (* Updates keep only changes in the iteration's direction: a no-op from
+     the true start, needed from a warm or lower-level start. *)
+  let win = start = lose c in
+  let keep = if win then best c else worst c in
+  (* The value one level down bounds a position's value (more life is never
+     worse for A, in the abstraction as in the game). It lies on the far side
+     of the fixed point when the protagonist's win is sought for B or its
+     safety for A: a position that reaches it is final and is skipped.
+     Otherwise it is a closer start than [start]. The extreme value is the
+     far bound at the lowest level. TCB_NOBOUND=1 disables both, for
+     testing. *)
+  let bounds = Sys.getenv_opt "TCB_NOBOUND" <> Some "1" in
+  let lower_is_far = win = up c in
+  let extreme = if win then (if up c then 1 else inf) else if up c then inf else ninf in
   let id = id sv in
+  let nb = sv.nb in
   let hist = if ranks then Some (Disk.runs ~base:(path sv "histrun") ~size:16 ~mem) else None in
   let hrec = Bytes.create 16 in
   let evals = ref 0 and t0 = Unix.gettimeofday () in
   let prog_file k = path sv (Printf.sprintf "prog-%d" k) and index_file k = path sv (Printf.sprintf "index-%d" k) in
-  for l = 0 to 20 do
-    if Sys.file_exists (level_file sv.dir l) then begin
-      let members = read_int32s (level_file sv.dir l) in
-      let m = Array.length members in
-      let w = Par.workers m 64 in
-      (* compile: per slice, a program file and an index of (nodes, words) *)
-      let words =
-        Par.map ~dir:sv.dir w (fun k ->
-            let lo, hi = Par.chunk m w k in
-            let po = Disk.out (prog_file k) and io = Disk.out (index_file k) in
-            let words = ref 0 in
-            for j = lo to hi - 1 do
-              let prog, nn = compile c id (of_key (key_at sv members.(j))) in
-              let len = Bigarray.Array1.dim prog in
-              let b = Bytes.create (4 * len) in
-              for x = 0 to len - 1 do Bytes.set_int32_le b (4 * x) prog.{x} done;
-              output_bytes po b;
-              Disk.output_int32 io nn;
-              Disk.output_int32 io len;
-              words := !words + len
-            done;
-            close_out po;
-            close_out io;
-            !words)
-      in
-      let progs = Array.mapi (fun k ws -> Disk.map Bigarray.int32 (prog_file k) (max 1 ws) ~write:false) words in
-      let offs = Array.make m 0 and nodes = Array.make m 0 and part = Array.make m 0 in
-      for k = 0 to w - 1 do
-        let lo, hi = Par.chunk m w k in
-        let idx = read_int32s (index_file k) in
-        let off = ref 0 in
+  (* compile every base's turn once, for all levels: per slice, a program
+     file and an index of (nodes, words). A turn start becomes base lsl 5
+     lor the damage A took on the way. *)
+  let w = Par.workers nb 64 in
+  let tgt s =
+    let u = sent - s.sideA.life in
+    assert (u >= 0);
+    (* damage of 20 or more kills A at every level: exploration (with A on
+       20) never reached these turn starts, and they are never read, since
+       the guard decides; they get a placeholder that reads as dead *)
+    if u >= 20 then 31
+    else
+      let b = find sv (Tsearch.digest_key (base_of (key_gen c.full_a s))) in
+      assert (b < 1 lsl 26);
+      (b lsl 5) lor u
+  in
+  let words =
+    Par.map ~dir:sv.dir w (fun k ->
+        let lo, hi = Par.chunk nb w k in
+        let po = Disk.out (prog_file k) and io = Disk.out (index_file k) in
+        let words = ref 0 in
         for j = lo to hi - 1 do
-          part.(j) <- k;
-          nodes.(j) <- idx.(2 * (j - lo));
-          offs.(j) <- !off;
-          off := !off + idx.((2 * (j - lo)) + 1)
-        done
-      done;
-      let eval j = norm c (run c (get sv) progs.(part.(j)) offs.(j) nodes.(j)) in
-      (match hist with
-       | Some h ->
-         (* synchronous rounds, so each value change gets a round number *)
-         let nv_path = path sv "next" in
-         let fd = Unix.openfile nv_path [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
-         Unix.ftruncate fd (4 * m); Unix.close fd;
-         let nv = Disk.map Bigarray.int32 nv_path (max 1 m) ~write:true in
-         let round = ref 0 and changed = ref true in
-         while !changed do
-           incr round;
-           assert (!round < 1 lsl 24);
-           changed := false;
-           ignore (Par.map ~dir:sv.dir w (fun k ->
-               let lo, hi = Par.chunk m w k in
-               for j = lo to hi - 1 do nv.{j} <- Int32.of_int (to32 (eval j)) done;
-               0));
-           evals := !evals + m;
-           for j = 0 to m - 1 do
-             let i = members.(j) and v = of32 (Int32.to_int nv.{j}) in
-             if v <> get sv i then begin
-               changed := true;
-               Disk.set_key hrec 0 ((i lsl 24) lor !round);
-               Bytes.set_int64_le hrec 8 (Int64.of_int (to32 v));
-               Disk.push h hrec 0;
-               set sv i v
-             end
-           done
-         done;
-         Disk.remove nv_path
-       | None -> ());
-      let changed = ref true and sweeps = ref 0 in
-      while !changed do
-        incr sweeps;
-        let forward = !sweeps land 1 = 1 in
-        let r = Par.map ~dir:sv.dir w (fun k ->
-            let lo, hi = Par.chunk m w k in
-            let changed = ref 0 in
-            for x = lo to hi - 1 do
-              let j = if forward then x else lo + hi - 1 - x in
-              let v = eval j in
-              if v <> get sv members.(j) then begin set sv members.(j) v; incr changed end
-            done;
-            !changed)
-        in
-        evals := !evals + m;
-        changed := Array.exists (fun x -> x > 0) r
-      done;
-      let good = Array.fold_left (fun a i -> if get sv i <> lose c then a + 1 else a) 0 members in
-      Printf.printf "  A life %d: %d positions (%d not lost for the protagonist), %d program words, %d sweeps, %d evaluations so far (%.1fs)\n%!"
-        l m good (Array.fold_left ( + ) 0 words) !sweeps !evals (Unix.gettimeofday () -. t0);
-      Gc.full_major ();  (* unmap the level's programs *)
-      for k = 0 to w - 1 do Disk.remove (prog_file k); Disk.remove (index_file k) done;
-      Disk.remove (level_file sv.dir l)
-    end
+          let prog, nn = compile c tgt (of_key (with_life (base_key_at sv j) sent)) in
+          let len = Bigarray.Array1.dim prog in
+          let b = Bytes.create (4 * len) in
+          for x = 0 to len - 1 do Bytes.set_int32_le b (4 * x) prog.{x} done;
+          output_bytes po b;
+          Disk.output_int32 io nn;
+          Disk.output_int32 io len;
+          words := !words + len
+        done;
+        close_out po;
+        close_out io;
+        !words)
+  in
+  let progs = Array.mapi (fun k ws -> Disk.map Bigarray.int32 (prog_file k) (max 1 ws) ~write:false) words in
+  let offs = Array.make nb 0 and nodes = Array.make nb 0 and part = Array.make nb 0 in
+  for k = 0 to w - 1 do
+    let lo, hi = Par.chunk nb w k in
+    let idx = read_int32s (index_file k) in
+    let off = ref 0 in
+    for j = lo to hi - 1 do
+      part.(j) <- k;
+      nodes.(j) <- idx.(2 * (j - lo));
+      offs.(j) <- !off;
+      off := !off + idx.((2 * (j - lo)) + 1)
+    done
   done;
+  Printf.printf "  compiled %d turns, %d program words (%.1fs)\n%!" nb (Array.fold_left ( + ) 0 words)
+    (Unix.gettimeofday () -. t0);
+  (* the levels, lowest first *)
+  for slot = 0 to sv.nl - 1 do
+    let l = life_of_slot sv slot in
+    let first = slot * nb in
+    let value x =
+      let b = x lsr 5 and u = x land 31 in
+      if sv.pinned then get sv b
+      else if l - u < 1 then lose c  (* A is dead before this: never read, the guard decides *)
+      else get sv (((l - u - 1) * nb) + b)
+    in
+    let eval j = norm c (run c l value progs.(part.(j)) offs.(j) nodes.(j)) in
+    let below = bounds && slot > 0 && not sv.pinned in
+    let far =
+      if below && lower_is_far then fun j -> get sv (first - nb + j)
+      else if bounds then fun _ -> extreme
+      else fun _ -> max_int in
+    let final j = get sv (first + j) = far j in
+    if below && (not lower_is_far) && hist = None then
+      for j = 0 to nb - 1 do set sv (first + j) (keep (get sv (first + j)) (get sv (first - nb + j))) done;
+    (match hist with
+     | Some h ->
+       (* synchronous rounds, so each value change gets a round number *)
+       let nv_path = path sv "next" in
+       let fd = Unix.openfile nv_path [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
+       Unix.ftruncate fd (4 * nb); Unix.close fd;
+       let nv = Disk.map Bigarray.int32 nv_path (max 1 nb) ~write:true in
+       let round = ref 0 and changed = ref true in
+       while !changed do
+         incr round;
+         assert (!round < 1 lsl 24);
+         changed := false;
+         Par.map ~dir:sv.dir w (fun k ->
+             let lo, hi = Par.chunk nb w k in
+             let ev = ref 0 in
+             for j = lo to hi - 1 do
+               nv.{j} <- Int32.of_int (to32 (if final j then get sv (first + j) else (incr ev; eval j)))
+             done;
+             !ev)
+         |> Array.iter (fun e -> evals := !evals + e);
+         for j = 0 to nb - 1 do
+           let i = first + j and v = of32 (Int32.to_int nv.{j}) in
+           if v <> get sv i then begin
+             changed := true;
+             Disk.set_key hrec 0 ((i lsl 24) lor !round);
+             Bytes.set_int64_le hrec 8 (Int64.of_int (to32 v));
+             Disk.push h hrec 0;
+             set sv i v
+           end
+         done
+       done;
+       Disk.remove nv_path
+     | None -> ());
+    let changed = ref true and sweeps = ref 0 in
+    while !changed do
+      incr sweeps;
+      let forward = !sweeps land 1 = 1 in
+      let r = Par.map ~dir:sv.dir w (fun k ->
+          let lo, hi = Par.chunk nb w k in
+          let changed = ref 0 and ev = ref 0 in
+          for x = lo to hi - 1 do
+            let j = if forward then x else lo + hi - 1 - x in
+            if not (final j) then begin
+              incr ev;
+              let v = keep (get sv (first + j)) (eval j) in
+              if v <> get sv (first + j) then begin set sv (first + j) v; incr changed end
+            end
+          done;
+          (!ev lsl 31) lor !changed)
+      in
+      Array.iter (fun x -> evals := !evals + (x lsr 31)) r;
+      changed := Array.exists (fun x -> x land 0x7fffffff > 0) r
+    done;
+    let good = ref 0 in
+    for j = 0 to nb - 1 do if get sv (first + j) <> lose c then incr good done;
+    Printf.printf "  A life %d: %d positions (%d not lost for the protagonist), %d sweeps, %d evaluations so far (%.1fs)\n%!"
+      l nb !good !sweeps !evals (Unix.gettimeofday () -. t0)
+  done;
+  Gc.full_major ();  (* unmap the programs *)
+  for k = 0 to w - 1 do Disk.remove (prog_file k); Disk.remove (index_file k) done;
   (match hist with
    | Some h ->
      Disk.sort_to h (path sv "hist");
@@ -618,14 +746,14 @@ let value c sv s = get sv (id sv (key_gen c.full_a s))
 
 let safe c s0 dir =
   let sv = reach c s0 dir in
-  Printf.printf "%d positions\n%!" sv.n;
+  Printf.printf "%d positions (%d bases at %d levels)\n%!" sv.n sv.nb sv.nl;
   solve c sv ~start:(if up c then 1 else inf);
   sv
 
-let win ?ranks c s0 dir =
+let win ?ranks ?warm c s0 dir =
   let sv = reach c s0 dir in
-  Printf.printf "%d positions\n%!" sv.n;
-  solve ?ranks c sv ~start:(lose c);
+  Printf.printf "%d positions (%d bases at %d levels)\n%!" sv.n sv.nb sv.nl;
+  solve ?ranks ?warm c sv ~start:(lose c);
   sv
 
 let show c v =
@@ -652,7 +780,9 @@ let has_ranks sv = sv.hist <> None
 (* A line of play from [s0] with B on [life], following the solved values
    (needs ranks). The protagonist plays a move that keeps its value as of
    the previous round of the current position's level (so the line makes
-   progress); the opponent plays a worst move for it. *)
+   progress); the opponent plays a worst move for it. Without ranks the
+   protagonist only keeps its current value, so the line may go round in
+   circles, but it still shows the plan. *)
 let line c sv s0 life turns =
   let id = id sv in
   let level k = (of_key k).sideA.life in
@@ -671,7 +801,7 @@ let line c sv s0 life turns =
         (* the first round at which this position was won with this life *)
         let r = match List.find_opt (fun (_, v) -> v <= l) (history sv i) with Some (r', _) -> r' | None -> max_int in
         Printf.printf "--- turn %d (round %d of A-life level %d) ---\n%s\n" t r (level k) (Show.state s);
-        let lk k' = let j = id k' in if level k' < level k then get sv j else at_round j (r - 1) in
+        let lk k' = let j = id k' in if level k' < level k || not (has_ranks sv) then get sv j else at_round j (r - 1) in
         if t < turns then go lk s (t + 1)
       end else go (fun k' -> get sv (id k')) s t
   and go lk s t =
@@ -696,11 +826,13 @@ let line c sv s0 life turns =
   walk { s0 with sideB = { s0.sideB with life } } 0
 
 (* Saved tables are solver directories with a meta file: a format line,
-   then one key=value field per line. *)
+   then one key=value field per line. Format 3 has bases and levels; format
+   2 (legacy) has one key per position. *)
 let save_meta sv header =
   let oc = open_out (path sv "meta") in
-  output_string oc "TCBFIX 2\n";
-  List.iter (fun (k, v) -> Printf.fprintf oc "%s=%s\n" k v) (("n", string_of_int sv.n) :: header);
+  output_string oc "TCBFIX 3\n";
+  List.iter (fun (k, v) -> Printf.fprintf oc "%s=%s\n" k v)
+    (("n", string_of_int sv.n) :: ("nb", string_of_int sv.nb) :: ("nl", string_of_int sv.nl) :: header);
   close_out oc
 
 (* Delete a solver directory that is not kept. *)
@@ -710,7 +842,7 @@ let remove sv =
 
 let read_meta dir =
   let ic = open_in (Filename.concat dir "meta") in
-  if input_line ic <> "TCBFIX 2" then failwith (dir ^ ": not a solved table");
+  (match input_line ic with "TCBFIX 2" | "TCBFIX 3" -> () | _ -> failwith (dir ^ ": not a solved table"));
   let rec fields acc =
     match input_line ic with
     | l -> (match String.index_opt l '=' with
@@ -761,7 +893,11 @@ let load file =
   let dir = if Sys.is_directory file then file else file ^ ".d" in
   if not (Sys.file_exists (Filename.concat dir "meta")) then import_v1 file dir;
   let header = read_meta dir in
-  (header, open_dir dir (int_of_string (List.assoc "n" header)) ~write:false)
+  let gi k = int_of_string (List.assoc k header) in
+  let sv = match List.assoc_opt "nl" header with
+    | Some _ -> open_dir ~pinned:(List.assoc_opt "fulla" header = Some "1") dir ~nb:(gi "nb") ~nl:(gi "nl") ~write:false
+    | None -> open_dir dir ~nb:(gi "n") ~nl:0 ~write:false in
+  (header, sv)
 
 let hex s = String.concat "" (List.map (fun c -> Printf.sprintf "%02x" (Char.code c)) (List.of_seq (String.to_seq s)))
 let unhex h = String.init (String.length h / 2) (fun i -> Char.chr (int_of_string ("0x" ^ String.sub h (2 * i) 2)))
