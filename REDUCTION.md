@@ -683,17 +683,18 @@ because A's Walkers grow without bound: an A-safe proof has to argue about
 unbounded sizes (a symbolic invariant), and no finite A-safe table or
 certificate in the style of the B results can exist.
 
-**A's hardest line is a stall.** `win-reach` also prints the chain of
+**A long stall in B's relaxed win.** `win-reach` also prints the chain of
 records from the opening to the first one needing the most life. On the
 relaxed `ot` 40 table (B from 18) it is 172 turn starts long. After an
 opening skirmish, A is on 11 life with Walkers 4 and 11, and B holds a
 6-counter Walker and Elixir. Then nobody attacks for about 70 rounds: B
-banks 5 life per Elixir cycle (its life, and the record it needs, climb from
-20 to 200), and A grows its bigger Walker from 11 to 40 (about 0.4 a round).
-The line ends only when that Walker reaches the clamp at 41, after which the
-relaxed rules let B take its hits. In the real game nothing ends this stall,
-so this branch is a draw unless one side can break it profitably. That gives
-the A-safe proof a concrete target: A's fortress (a small Walker and a big
-one that keeps growing, both at home) against B's Walker, Elixir and banked
-life, with an invariant saying B can't break it at any life.
-
+banks 5 life per Elixir cycle (its life climbs from 20 to 200), and A grows
+its bigger Walker from 11 to 40 (about 0.4 a round). The chain stops there
+because 200 is `lmax`, the most any record can need, so it does not show
+when or how B finally breaks the stall, or whether that needs A's clamp at
+41. (The value "B needs" along the chain mostly follows B's own banked life:
+more life lets B use an earlier, faster record.) What it does show is a
+legal line where A's Walkers grow for 70 rounds while B banks, with no
+fighting. If the real game is a draw, a stall like this, with A's fortress (a
+small Walker and a big one that keeps growing, both at home) against B's
+Walker, Elixir and banked life, is the natural target for the invariant.
