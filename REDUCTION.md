@@ -335,7 +335,10 @@ counter is never seen until the delayed pump adds it too.
   the opponent's turn, so it can't block there. Delaying to the opponent's
   end step uses the same City activation of the round, since City untaps
   only in its controller's untap step. *Mimic.* (Attacking Walkers are
-  already tapped and can't pump.)
+  already tapped and can't pump.) The exception is mana left over in main
+  phase 2, as when City's 2 mana pays for Elixir (1) and a pump (1): that
+  City activation is gone by the end step, so the filter keeps a pump in
+  main phase 2 while mana is left over.
 - **Pumps on the opponent's turn before blocks** tap the Walker, so it can't
   block; **pumps of a non-blocking Walker after blocks or in later combat
   steps** don't affect combat. Delay to the end step. *Mimic.* The exception
