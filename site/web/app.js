@@ -41,7 +41,18 @@ const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 let engine; // main-thread engine: legal moves, steps, views
 let worker = null;
 let workerBusy = false;
+let workerMode = null; // "cert" or "search" while busy
 let reqId = 0;
+
+// Certified play: when you play A and B goes first, the computer plays B
+// from the certificate Rocq checks (engine/src/cert.rs), never from the
+// heuristic search, except in positions the certificate doesn't cover.
+let certStatus = "off"; // the worker's table: "off", "loading", "ready" or "error"
+let certInfo = null; // the worker's load report
+let certError = null; // certified play failed: the computer stops
+let certNote = null; // why the current position is not covered (heuristic fallback)
+const certWanted = () => settings.human === "A" && settings.starter === "B";
+const certActive = () => certWanted() && !certNote && !certError;
 
 let settings = { human: "A", starter: "A", budget: 1000, autopass: "smart", lifeA: 20, lifeB: 20 };
 let game; // { rec, who, views, log, result }
@@ -65,9 +76,12 @@ function newGame() {
   lastEngineInfo = "";
   drawOfferFrom = DRAW_TURNS;
   drawDismissedKey = null;
+  certError = null;
+  certNote = null;
   engine.load(game.rec);
   cur = engine.view();
   cancelSearch();
+  ensureCert();
 }
 
 function turnNow() {
@@ -235,7 +249,7 @@ function applyMove(i, who, quiet = false) {
   for (const t of events(pre, m, cur)) entries.push({ kind: "event", text: t });
   game.log.push(entries);
   if (cur.winner) game.result = cur.winner;
-  if (who === "engine" && !isNoop(m)) {
+  if ((who === "engine" || who === "cert") && !isNoop(m)) {
     passUntilTurn = null;
     flashStatus = `Engine (${pre.toMove}) ${moveText(pre, m)}.`;
   }
@@ -254,6 +268,8 @@ function undo() {
   game.log.length = k;
   game.result = null;
   passUntilTurn = null;
+  certError = null;
+  certNote = null;
   engine.load(game.rec);
   cur = engine.view();
   drawDismissedKey = null;
@@ -293,7 +309,9 @@ function advance() {
         if (shouldAutoPass(cur)) { applyMove(cur.moves.findIndex((m) => m.k === "pass"), "auto", true); n++; continue; }
         break;
       }
-      // the engine's decision: trivial ones are played here
+      // the engine's decision: trivial ones are played here, except that
+      // every decision of the certified B goes through the certificate
+      if (certWanted()) break;
       const cands = cur.filtered.length ? cur.filtered : cur.moves.map((_, i) => i);
       if (cands.length <= 1) { applyMove(cands[0] ?? 0, "engine", true); n++; continue; }
       break;
@@ -315,30 +333,107 @@ function advance() {
 
 function startWorker() {
   worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" });
-  worker.onmessage = onEngineReply;
+  worker.onmessage = (e) => (e.data.type === "cert-ready" ? onCertReady(e.data) : onEngineReply(e));
   worker.onerror = (e) => {
     workerBusy = false;
     lastEngineInfo = `Engine error: ${e.message || "worker failed"}`;
     render();
   };
+  certStatus = "off"; // a new worker has no table yet
+}
+
+/// Load the certificate in the worker, in the background, if this game
+/// wants it.
+function ensureCert() {
+  if (!certWanted() || certStatus === "loading" || certStatus === "ready") return;
+  if (!worker) startWorker();
+  certStatus = "loading";
+  worker.postMessage({ type: "cert-load" });
+}
+
+function onCertReady(d) {
+  if (d.ok) {
+    certStatus = "ready";
+    certInfo = d;
+  } else {
+    certStatus = "error";
+    certError = `Could not load the certificate (${d.error}). The computer won't move without it; start a new game to retry.`;
+  }
+  render();
+  if (game && !game.result && !cur.winner && !isMine(cur)) requestEngineMove();
 }
 
 function cancelSearch() {
   reqId++;
-  if (workerBusy && worker) {
+  // A certified request is quick and not time-limited: let it finish
+  // (its reply is ignored) rather than lose the worker's table.
+  if (workerBusy && worker && workerMode !== "cert") {
     worker.terminate();
     worker = null;
     workerBusy = false;
+    certStatus = "off";
   }
 }
 
-function requestEngineMove() {
-  if (workerBusy) return;
+function requestEngineMove(mode) {
+  if (workerBusy || certError) return;
   if (!worker) startWorker();
+  if (certWanted() && mode !== "search") {
+    // Make no move until the certificate is loaded.
+    if (certStatus !== "ready") { ensureCert(); render(); return; }
+    mode = "cert";
+  } else {
+    mode = "search";
+  }
   workerBusy = true;
+  workerMode = mode;
   const id = ++reqId;
-  worker.postMessage({ id, rec: game.rec.slice(), budget: settings.budget });
+  worker.postMessage(mode === "cert" ? { id, rec: game.rec.slice(), mode } : { id, rec: game.rec.slice(), budget: settings.budget });
   render();
+}
+
+function onCertReply(r) {
+  if (!r.ok) {
+    certError = r.bug
+      ? `Certified play failed: ${r.error}. This is a bug (the certificate covers this position); the computer will not move.`
+      : `Certified play failed: ${r.error}. The computer will not move.`;
+    lastEngineInfo = "";
+    render();
+    return;
+  }
+  if (r.certified && r.moves.length === 0) {
+    certError = "Certified play failed: it returned no move. This is a bug; the computer will not move.";
+    render();
+    return;
+  }
+  if (r.certified) {
+    certNote = null;
+    for (const i of r.moves) {
+      if (!applyMove(i, "cert", true)) {
+        certError = "Certified play failed: it chose an illegal move. This is a bug; the computer will not move.";
+        break;
+      }
+    }
+    lastEngineInfo =
+      `Certified: B plays from a record of the Rocq-checked certificate (rank ${r.rank}, which needs ${r.val} life; B has ${r.life}). ` +
+      `${plural(r.nodes, "position")} checked in ${r.ms < 10 ? r.ms.toFixed(1) : Math.round(r.ms)} ms.`;
+    save();
+    advance();
+    return;
+  }
+  // Not covered. Leaving the certificate by your move (A) or by a
+  // certified B move is impossible unless something is wrong.
+  const k = r.lostAfter;
+  if (k !== null && k !== undefined && (game.who[k] === "cert" || game.views[k].toMove === "A")) {
+    const by = game.views[k].toMove === "A" ? "A's move" : "a certified B move";
+    certError = `Certified play failed: the game left the certificate after ${by} (move ${k + 1}): ${r.reason}. This is a bug; the computer will not move.`;
+    render();
+    return;
+  }
+  certNote = k === null || k === undefined
+    ? `this game did not start from a position the certificate covers (${r.reason})`
+    : `an earlier B move was not the certified one (${r.reason})`;
+  requestEngineMove("search");
 }
 
 function describeValue(r) {
@@ -353,15 +448,20 @@ function describeValue(r) {
 
 function onEngineReply(e) {
   const r = e.data;
-  if (r.id !== reqId) return; // stale (undo or restart happened)
   workerBusy = false;
+  if (r.id !== reqId) {
+    // stale (undo or restart happened): ask again for the current position
+    if (game && !game.result && !cur.winner && !isMine(cur)) requestEngineMove();
+    return;
+  }
+  if (r.mode === "cert") return onCertReply(r);
   if (!r.ok) {
     lastEngineInfo = `Engine error: ${r.error}`;
     render();
     return;
   }
   const reach = r.depth === 0 ? "to the end of this turn" : `this turn and ${plural(r.depth, "more turn")}`;
-  lastEngineInfo =
+  lastEngineInfo = (certNote ? "Not certified: heuristic search. " : "") +
     `Engine searched ${reach} (${r.nodes.toLocaleString()} new positions, ` +
     `${(r.ms / 1000).toFixed(1)} s); ${describeValue(r)}.`;
   if (!applyMove(r.move, "engine")) {
@@ -376,6 +476,8 @@ function onEngineReply(e) {
 
 function drawPrompt() {
   if (game.result || cur.winner) return null;
+  // The certified B doesn't offer or accept draws: it wins in finitely many turns.
+  if (certActive()) return null;
   const t = turnNow();
   // count repeated turn-start positions
   const counts = new Map();
@@ -397,7 +499,7 @@ function drawPrompt() {
 }
 
 function declareDraw() {
-  if (game.result || cur.winner) return;
+  if (game.result || cur.winner || certActive()) return;
   cancelSearch();
   game.result = "draw";
   save();
@@ -415,9 +517,38 @@ function render() {
   renderBanner();
   renderControls();
   renderLog();
+  renderCert();
   $("engine-info").textContent = lastEngineInfo;
   $("btn-undo").disabled = !game.who.includes("user");
-  $("btn-draw").disabled = !!(game.result || cur.winner);
+  $("btn-draw").disabled = !!(game.result || cur.winner || certActive());
+  $("btn-draw").title = certActive()
+    ? "The certified engine doesn't accept draws: it is guaranteed to win"
+    : "End the game as a draw";
+}
+
+function renderCert() {
+  const box = $("cert");
+  box.className = "cert";
+  if (!certWanted()) { box.hidden = true; return; }
+  box.hidden = false;
+  let kind, title, text;
+  if (certError) {
+    [kind, title, text] = ["error", "Error.", certError];
+  } else if (certNote) {
+    [kind, title, text] = ["off", "Not certified:", `${certNote}. The computer plays B with the heuristic search from here.`];
+  } else if (certStatus !== "ready") {
+    [kind, title, text] = ["loading", "Certified play:", "loading the certificate (about 1.3 MB). The computer moves once it has loaded."];
+  } else {
+    const info = certInfo
+      ? ` (${certInfo.records.toLocaleString()} records, ${(certInfo.gzBytes / 1e6).toFixed(1)} MB, loaded in ${(certInfo.totalMs / 1000).toFixed(1)} s)`
+      : "";
+    [kind, title, text] = ["on", "Certified:",
+      `the computer plays B from the table that Rocq checks for the B-first theorem${info}, so it cannot lose. ` +
+      "Its moves are certified to win, not the best or the fastest."];
+  }
+  box.classList.add(kind);
+  box.replaceChildren(el("b", {}, title), " ", text);
+  if (certInfo) box.dataset.load = JSON.stringify(certInfo); // load timings, for the smoke test
 }
 
 function renderSide(box, p) {
@@ -429,6 +560,7 @@ function renderSide(box, p) {
   const head = el("div", { class: "side-head" },
     el("div", { class: "who" }, `Player ${p}`,
       el("span", { class: `tag ${mine ? "you" : "them"}` }, mine ? "you" : "engine"),
+      !mine && p === "B" && certActive() ? el("span", { class: "tag cert", title: "plays from the Rocq-checked certificate" }, "certified") : null,
       cur.active === p ? el("span", { class: "tag active" }, "active") : null),
     cur.winner === opp(p)
       ? el("div", { class: "life", title: "reduced to 0 or less life" }, "≤0", el("small", {}, "life"))
@@ -540,8 +672,14 @@ function renderStatus() {
   } else if (isMine(cur)) {
     main = `Your decision (${settings.human}): ${pendText(cur)}`;
     if (cur.pend.kind === "window" && cur.pend.passed) sub = (sub ? sub + " " : "") + "The engine passed: if you pass too, the step ends.";
+  } else if (certError) {
+    main = `Engine (${cur.toMove}) stopped: see the error above.`;
+    box.classList.add("engine");
+  } else if (certWanted() && certStatus !== "ready" && !certNote) {
+    main = `Engine (${cur.toMove}) is loading the certificate…`;
+    box.classList.add("engine");
   } else {
-    main = `Engine (${cur.toMove}) is thinking: ${pendText(cur)}…`;
+    main = `Engine (${cur.toMove}) is ${certActive() ? "choosing a certified move" : "thinking"}: ${pendText(cur)}…`;
     box.classList.add("engine");
   }
   box.replaceChildren(main, ...(sub ? [el("span", { class: "sub" }, sub)] : []));

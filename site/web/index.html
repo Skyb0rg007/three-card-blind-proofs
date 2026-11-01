@@ -29,6 +29,7 @@
   </section>
 
   <section class="panel">
+    <div id="cert" class="cert" hidden aria-live="polite"></div>
     <div id="status" class="status" aria-live="polite"></div>
     <div id="banner" class="banner" hidden></div>
     <div id="controls" class="controls"></div>
@@ -73,11 +74,13 @@
     </fieldset>
     <details>
       <summary>Variant: starting life</summary>
-      <p class="dim small">The real game starts at 20. The solver shows A wins if B starts at 15 or less.</p>
+      <p class="dim small">The real game starts at 20. The solver shows A wins if B starts at 15 or less. Certified play needs A on 20 and B on at least 17; other totals fall back to the heuristic search.</p>
       <label class="num">A life <input type="number" name="lifeA" min="1" max="200" value="20"></label>
       <label class="num">B life <input type="number" name="lifeB" min="1" max="200" value="20"></label>
     </details>
-    <p class="dim small">The computer plays a bounded search with a heuristic, not proven-optimal play: this game is unsolved. See About.</p>
+    <p class="dim small">If you play A and B goes first, the computer plays B from the certificate that Rocq checks,
+      so it cannot lose (its moves are certified to win, not the best or the fastest). Otherwise it plays a
+      bounded search with a heuristic, not proven-optimal play. See About.</p>
     <div class="row end">
       <button value="cancel" id="setup-cancel" formnovalidate>Cancel</button>
       <button value="start" class="primary" id="setup-start">Start</button>
@@ -90,28 +93,36 @@
     <h2>About this game</h2>
     <p>This is the 3-Card Blind matchup modelled in the <code>three-card-blind-proofs</code> repository.
       Both players see everything, start at 20 life and start with their three cards in hand.
-      City of Traitors is treated as already on the battlefield (RULES.md S1). When Elixir shuffles
+      City of Traitors is treated as already on the battlefield (<code>spec/RULES.md</code> S1). When Elixir shuffles
       B's library, A chooses the order, because 3CB resolves random effects in the way most
       favourable to the opponent.</p>
-    <p>The rules engine is the repository's Rust port of the Rocq model (<code>theories/Model.v</code>),
+    <p>The rules engine is the repository's Rust port of the Rocq model (<code>spec/Model.v</code>),
       compiled unchanged to WebAssembly. It is checked against the native solver's
       differential walk, byte for byte.</p>
-    <h3>How strong is the computer?</h3>
-    <p><b>The computer plays a bounded search, not proven-optimal play.</b> It searches every
+    <h3>What is proved</h3>
+    <ul>
+      <li>When B goes first, B can force a win. Rocq checks this with a table of 1.5 million positions.</li>
+      <li>When A goes first, A can't force a win: B never loses. Whether B can force a win there is still open.</li>
+    </ul>
+    <h3>When you play A and B goes first: certified play</h3>
+    <p><b>The computer plays B from the certificate, so it cannot lose.</b> The page loads the same
+      table Rocq checks for the B-first theorem (<code>proofs/bfirst/Data.v</code>, about 1.3 MB gzipped).
+      At each turn start B takes the table's record for the position, and at each of its decisions
+      it plays a move after which the checker Rocq runs still passes, ported to Rust and run in your
+      browser. Rocq proves that whatever A does, B then wins within finitely many turns.</p>
+    <p>The moves are <b>certified to win, not the best or the fastest</b>: B doesn't look for the
+      quickest win, only one the certificate guarantees. It never offers or accepts a draw. If the
+      game didn't start from a position the certificate covers (for example with other starting
+      life totals), the page says so and the computer uses the heuristic search instead.</p>
+    <h3>Otherwise: a bounded search</h3>
+    <p>In the other set-ups <b>the computer plays a bounded search, not proven-optimal play.</b> It searches every
       decision of the current turn and several more turns, then scores the position with a
       heuristic: life totals, counters, Thopters, cards, and lethal threats.
-      The real game is unsolved. The solver's tables run to tens of millions of positions and
-      several gigabytes, so they can't be shipped to a browser.</p>
-    <h3>What the research says so far</h3>
-    <ul>
-      <li>From the opening where A goes first, the solver shows A <b>cannot</b> force a win: B survives from 20 life.</li>
-      <li>A does win if B starts with 15 life or less.</li>
-      <li>B is believed to need about 25 life to force a win.</li>
-      <li>So the real game is believed to be a draw, but that is unproven on B's side.</li>
-    </ul>
-    <p>Walkers can grow forever and Elixir can loop, so games can go on indefinitely. The page
-      offers a draw when a position repeats or the game runs long, and you can declare one at
-      any time.</p>
+      Those openings are unsolved for B's win, and the solver's other tables are far too big to
+      ship to a browser.</p>
+    <p>Walkers can grow forever and Elixir can loop, so games against the search can go on
+      indefinitely. The page then offers a draw when a position repeats or the game runs long, and
+      you can declare one at any time.</p>
     <div class="row end"><button class="primary" value="close">Close</button></div>
   </form>
 </dialog>

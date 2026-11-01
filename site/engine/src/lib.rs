@@ -34,6 +34,8 @@ pub mod fix;
 #[path = "../../../rsolver/src/walk.rs"]
 pub mod walk;
 
+pub mod cert;
+pub mod certtest;
 pub mod search;
 
 use model::*;
@@ -90,6 +92,28 @@ pub fn replay(rec: &[u32]) -> (State, usize) {
         }
     }
     (s, ms.len())
+}
+
+/// Replay a game record, keeping every state and move. Stops at the first
+/// illegal index.
+pub fn replay_all(rec: &[u32]) -> (Vec<State>, Vec<Move>) {
+    let starter = if rec.first().copied().unwrap_or(0) == 0 { Player::A } else { Player::B };
+    let la = rec.get(1).copied().unwrap_or(20).max(1);
+    let lb = rec.get(2).copied().unwrap_or(20).max(1);
+    let mut states = vec![start(starter, la, lb)];
+    let mut mvs = vec![];
+    for &i in rec.iter().skip(3) {
+        let s = states.last().unwrap();
+        match moves(s).get(i as usize) {
+            Some(m) => {
+                let n = step(s, m);
+                mvs.push(m.clone());
+                states.push(n);
+            }
+            None => break,
+        }
+    }
+    (states, mvs)
 }
 
 // ---- JSON ----
@@ -304,6 +328,10 @@ thread_local! {
     static CUR: RefCell<State> = RefCell::new(init(Player::A));
     static OUT: RefCell<String> = RefCell::new(String::new());
     static SEARCH: RefCell<search::Search> = RefCell::new(search::Search::new());
+    /// The game record of the current state (what `load` and `play` built).
+    static REC: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// The B-first certificate, once `cert_load` has decoded it.
+    static TABLE: RefCell<Option<cert::Table>> = const { RefCell::new(None) };
 }
 
 fn set_out(s: String) {
@@ -341,6 +369,7 @@ pub unsafe extern "C" fn load(p: *const u32, n: usize) -> i32 {
     let rec = if n == 0 { &[][..] } else { std::slice::from_raw_parts(p, n) };
     let (s, k) = replay(rec);
     CUR.with(|c| *c.borrow_mut() = s);
+    REC.with(|r| *r.borrow_mut() = rec[..(3 + k).min(rec.len())].to_vec());
     k as i32
 }
 
@@ -352,6 +381,7 @@ pub extern "C" fn play(i: u32) -> i32 {
         match moves(&s).get(i as usize) {
             Some(m) => {
                 *c.borrow_mut() = step(&s, m);
+                REC.with(|r| r.borrow_mut().push(i));
                 1
             }
             None => 0,
@@ -389,4 +419,125 @@ pub extern "C" fn think(budget_ms: f64, max_depth: u32) {
 #[no_mangle]
 pub extern "C" fn reset_search() {
     SEARCH.with(|sr| *sr.borrow_mut() = search::Search::new());
+}
+
+// ---- certified play for B (cert.rs) ----
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            c if (c as u32) < 0x20 => write!(o, "\\u{:04x}", c as u32).unwrap(),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// Space for `n` bytes (the certificate table for `cert_load`).
+#[no_mangle]
+pub extern "C" fn alloc_bytes(n: usize) -> *mut u8 {
+    let mut v: Vec<u8> = Vec::with_capacity(n.max(1));
+    let p = v.as_mut_ptr();
+    std::mem::forget(v);
+    p
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn free_bytes(p: *mut u8, n: usize) {
+    drop(Vec::from_raw_parts(p, 0, n.max(1)));
+}
+
+/// Decode the (already decompressed) certificate table of `n` bytes at
+/// `p`. Returns 1, or 0 with the error in the output buffer.
+#[no_mangle]
+pub unsafe extern "C" fn cert_load(p: *const u8, n: usize) -> i32 {
+    let b = if n == 0 { &[][..] } else { std::slice::from_raw_parts(p, n) };
+    let t0 = now();
+    match cert::Table::from_bytes(b) {
+        Ok(t) => {
+            // The opening's record named by BFirst.v must be there.
+            if t.lookup(&t.key(&init(Player::B)), cert::OPENING_RANK) != Some(cert::OPENING_VAL) {
+                set_out("{\"ok\":false,\"error\":\"the table has no opening record\"}".into());
+                return 0;
+            }
+            set_out(format!(
+                "{{\"ok\":true,\"records\":{},\"checksum\":\"{:016x}\",\"ms\":{:.0}}}",
+                t.len(),
+                t.checksum(),
+                now() - t0
+            ));
+            TABLE.with(|x| *x.borrow_mut() = Some(t));
+            1
+        }
+        Err(e) => {
+            set_out(format!("{{\"ok\":false,\"error\":{}}}", json_str(&e)));
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cert_loaded() -> i32 {
+    TABLE.with(|x| x.borrow().is_some() as i32)
+}
+
+/// B's certified moves from the current game (`cert::plan`), as JSON:
+/// * `{"ok":true,"certified":true,"moves":[...],...}`: the move indices
+///   to play in turn, until A is to move or the game is over;
+/// * `{"ok":true,"certified":false,"reason":...,"lostAfter":k|null}`: the
+///   position is outside the certificate; `lostAfter` is the index of the
+///   move after which the game left it, if it ever was inside;
+/// * `{"ok":false,"error":...}`: the search failed where the certificate
+///   should cover the position, which is a bug.
+#[no_mangle]
+pub extern "C" fn cert_plan() {
+    let t0 = now();
+    let rec = REC.with(|r| r.borrow().clone());
+    let j = TABLE.with(|x| {
+        let x = x.borrow();
+        let Some(t) = x.as_ref() else {
+            return "{\"ok\":false,\"error\":\"the certificate is not loaded\"}".to_string();
+        };
+        let (states, mvs) = replay_all(&rec);
+        if mvs.len() + 3 != rec.len() {
+            return "{\"ok\":false,\"error\":\"the game record does not replay\"}".to_string();
+        }
+        match cert::plan(t, &states, &mvs) {
+            Ok(p) => format!(
+                "{{\"ok\":true,\"certified\":true,\"moves\":[{}],\"rank\":{},\"val\":{},\"life\":{},\"nodes\":{},\"ms\":{:.1}}}",
+                p.moves.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","),
+                p.rank,
+                p.val,
+                p.life,
+                p.stats.nodes,
+                now() - t0
+            ),
+            Err(cert::Failure::Uncovered(m)) => format!(
+                "{{\"ok\":true,\"certified\":false,\"reason\":{},\"lostAfter\":{}}}",
+                json_str(&m),
+                t.diagnose(&states, &mvs).map_or("null".to_string(), |k| k.to_string())
+            ),
+            Err(cert::Failure::Bug(m)) => format!("{{\"ok\":false,\"bug\":true,\"error\":{}}}", json_str(&m)),
+        }
+    });
+    set_out(j);
+}
+
+/// Self-play of certified B from the B-first opening (certtest.rs), for
+/// test/cert-check.mjs. `adv`: 0 random, 1 biased random, 2 rank, 3 value,
+/// 1000 + ms the heuristic search.
+#[no_mangle]
+pub extern "C" fn cert_selfplay(games: u32, adv: u32, seed_lo: u32, seed_hi: u32) {
+    let j = TABLE.with(|x| {
+        let x = x.borrow();
+        match (x.as_ref(), certtest::Adversary::code(adv)) {
+            (Some(t), Some(a)) => certtest::selfplay(t, a, games as u64, (seed_hi as u64) << 32 | seed_lo as u64).to_json(),
+            _ => "{\"error\":\"no table or bad adversary\"}".to_string(),
+        }
+    });
+    set_out(j);
 }

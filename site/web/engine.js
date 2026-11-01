@@ -72,4 +72,56 @@ export class Engine {
   resetSearch() {
     this.ex.reset_search();
   }
+
+  /// Decode the certificate table (decompressed bytes). Returns
+  /// { ok, records, checksum, ms } or { ok: false, error }.
+  loadCert(bytes) {
+    const n = bytes.length;
+    const p = this.ex.alloc_bytes(n);
+    new Uint8Array(this.ex.memory.buffer, p, n).set(bytes);
+    this.ex.cert_load(p, n);
+    this.ex.free_bytes(p, n);
+    return JSON.parse(this.out());
+  }
+
+  certLoaded() {
+    return this.ex.cert_loaded() === 1;
+  }
+
+  /// B's certified moves for the current game record (see cert_plan in
+  /// engine/src/lib.rs).
+  certPlan() {
+    this.ex.cert_plan();
+    return JSON.parse(this.out());
+  }
+
+  /// Self-play of certified B (adv: 0 random, 1 biased, 2 rank, 3 value,
+  /// 1000 + ms search).
+  certSelfplay(games, adv, seed) {
+    const s = BigInt(seed);
+    this.ex.cert_selfplay(games, adv, Number(s & 0xffffffffn), Number((s >> 32n) & 0xffffffffn));
+    return JSON.parse(this.out());
+  }
+}
+
+/// Fetch the gzipped certificate table and decompress it. Returns
+/// { bytes, gzBytes, fetchMs, inflateMs }.
+export async function fetchCertTable(source) {
+  const t0 = performance.now();
+  let gz;
+  if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+    gz = new Uint8Array(source.buffer ? source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength) : source);
+  } else {
+    const r = await fetch(source);
+    if (!r.ok) throw new Error(`could not fetch ${source}: ${r.status}`);
+    gz = new Uint8Array(await r.arrayBuffer());
+  }
+  const t1 = performance.now();
+  let bytes = gz;
+  // A server may already have removed the gzip layer (Content-Encoding).
+  if (gz[0] === 0x1f && gz[1] === 0x8b) {
+    const stream = new Blob([gz]).stream().pipeThrough(new DecompressionStream("gzip"));
+    bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  return { bytes, gzBytes: gz.length, fetchMs: t1 - t0, inflateMs: performance.now() - t1 };
 }

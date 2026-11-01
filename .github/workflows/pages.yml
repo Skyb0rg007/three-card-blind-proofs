@@ -9,6 +9,7 @@ on:
     paths:
       - "site/**"
       - "rsolver/src/**"
+      - "proofs/bfirst/Data.v.xz"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 

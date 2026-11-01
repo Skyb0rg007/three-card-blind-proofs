@@ -15,6 +15,10 @@ crate-type = ["cdylib", "rlib"]
 name = "engine-bench"
 path = "src/bench.rs"
 
+[[bin]]
+name = "cert-tool"
+path = "src/certtool.rs"
+
 [dependencies]
 # Needed by rsolver/src/fix.rs (turn-start keys and digests in the walk).
 md-5 = "0.10"

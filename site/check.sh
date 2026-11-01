@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Check that the WASM engine reproduces `rsolver walk` byte for byte, then
 # run the targeted trace check (multi-blocks, damage orders) against the
-# native build of the same library.
+# native build of the same library, then the certified B: the site's table
+# holds exactly proofs/bfirst/Data.v, and certified B wins every self-play
+# game in WASM (CERT_GAMES games per A player, default 200).
 #   site/check.sh [STEPS [SEED...]]
 # Uses rsolver/target/release/rsolver if it exists; otherwise builds rsolver
 # into site/target/rsolver (leaving rsolver/target alone).
@@ -22,3 +24,11 @@ node "$here/test/walk-check.mjs" "$here/dist/engine.wasm" "$rsolver" "$steps" "$
 CARGO_TARGET_DIR="$here/target" cargo build --release -j"${JOBS:-4}" --bin engine-bench \
   --manifest-path "$here/engine/Cargo.toml"
 node "$here/test/trace-check.mjs" "$here/dist/engine.wasm" "$here/target/release/engine-bench" 60
+CARGO_TARGET_DIR="$here/target" cargo build --release -j"${JOBS:-4}" --bin cert-tool \
+  --manifest-path "$here/engine/Cargo.toml"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+xz -dc "$here/../proofs/bfirst/Data.v.xz" > "$tmp/Data.v"
+gzip -dc "$here/dist/cert-bfirst.bin.gz" > "$tmp/table.bin"
+"$here/target/release/cert-tool" same "$tmp/Data.v" "$tmp/table.bin"
+node "$here/test/cert-check.mjs" "$here/dist/engine.wasm" "$here/dist/cert-bfirst.bin.gz" "${CERT_GAMES:-200}"

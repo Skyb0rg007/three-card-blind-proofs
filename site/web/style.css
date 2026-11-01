@@ -133,6 +133,7 @@ main {
 .tag.you { background: var(--you); color: var(--surface); }
 .tag.them { background: var(--them); color: var(--surface); }
 .tag.active { background: var(--surface-2); color: var(--text); }
+.tag.cert { background: var(--you); color: var(--surface); }
 .life { font-size: 1.6rem; font-weight: 800; font-variant-numeric: tabular-nums; }
 .life small { font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-left: 2px; }
 .res { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 0.88rem; margin: 2px 0 8px; }
@@ -210,6 +211,14 @@ main {
   align-items: center;
 }
 .banner p { margin: 0; flex: 1 1 200px; }
+
+/* certified play (when you play A and B goes first) */
+.cert { border-radius: var(--radius); padding: 8px 10px; font-size: 0.9rem; border: 1px solid var(--border); background: var(--surface); }
+.cert.on { border-color: var(--you); }
+.cert.on b { color: var(--you); }
+.cert.loading { color: var(--muted); }
+.cert.off, .cert.error { background: var(--warn-bg); color: var(--warn-text); border-color: transparent; }
+.cert.error b { color: var(--them); }
 
 .controls {
   background: var(--surface);

@@ -94,12 +94,13 @@ const MY_TURN = `${STATUS}.startsWith('Your decision')`;
 const OVER = `/win|draw/.test(${STATUS})`;
 const OVERFLOW = `document.documentElement.scrollWidth > window.innerWidth + 1`;
 
-async function startGame(human, starter) {
+async function startGame(human, starter, lifeA = 20, lifeB = 20) {
   await evaluate(`(() => {
     const d = document.getElementById('setup');
     if (!d.open) document.getElementById('btn-new').click();
     const f = document.getElementById('setup-form');
     f.human.value = '${human}'; f.starter.value = '${starter}'; f.budget.value = '300';
+    f.lifeA.value = '${lifeA}'; f.lifeB.value = '${lifeB}';
     document.getElementById('setup-start').click();
   })()`);
   await waitFor(`${MY_TURN} || ${OVER}`);
@@ -182,15 +183,44 @@ try {
     check(/draw/.test(await evaluate(STATUS)), "declaring a draw ends the game");
   }
 
+  // certified B: you play A and B goes first
+  await startGame("A", "B");
+  const CERT = `document.getElementById('cert')`;
+  await waitFor(`${CERT}.classList.contains('on') || ${CERT}.classList.contains('error')`, 30000);
+  check(await evaluate(`${CERT}.classList.contains('on') && /^Certified:/.test(${CERT}.textContent)`), "certified play is announced (A vs B first)");
+  check(/certified/.test(await evaluate(`document.querySelector('#side-top .who').textContent`)), "B is tagged as certified");
+  check(await evaluate(`document.getElementById('btn-draw').disabled`), "the certified engine doesn't accept draws");
+  await shot("04b-certified-phone");
+  const load = JSON.parse(await evaluate(`${CERT}.dataset.load`));
+  console.log(`     certificate: ${load.records} records, ${load.gzBytes} bytes gzipped, fetch ${load.fetchMs.toFixed(0)} ms, ` +
+    `inflate ${load.inflateMs.toFixed(0)} ms, decode ${load.decodeMs.toFixed(0)} ms, total ${load.totalMs.toFixed(0)} ms`);
+  await playRandom(3000, "random play as A against certified B");
+  check(!(await evaluate(`${CERT}.classList.contains('error')`)), "certified play never failed");
+  check(/engine wins as B/.test(await evaluate(STATUS)), "certified B wins: " + (await evaluate(STATUS)));
+  check(/^Certified:/.test(await evaluate(`document.getElementById('engine-info').textContent`)), "engine info describes certified moves");
+  await shot("04c-certified-won-phone");
+
+  // B on 16 life is outside the certificate: labelled, heuristic fallback
+  await startGame("A", "B", 20, 16);
+  await waitFor(`${CERT}.classList.contains('off') || ${CERT}.classList.contains('error')`, 30000);
+  check(await evaluate(`${CERT}.classList.contains('off') && /^Not certified:/.test(${CERT}.textContent)`),
+    "an uncovered start is labelled not certified: " + (await evaluate(`${CERT}.textContent`)));
+  check(!(await evaluate(`document.getElementById('btn-draw').disabled`)), "draws are possible against the uncovered fallback");
+  check(await evaluate(`${MY_TURN} || ${OVER}`), "the heuristic fallback plays B's moves");
+  await shot("04d-uncovered-phone");
+
   // desktop layout and a reload resumes the game
   await send("browsingContext.setViewport", { context, viewport: { width: 1280, height: 900 } });
   await startGame("A", "B");
   await playRandom(20, "desktop warm-up");
+  await waitFor(`${MY_TURN} || ${OVER}`); // the engine's reply is saved
   const before = await evaluate(`document.querySelectorAll('#log li').length`);
   await send("browsingContext.navigate", { context, url, wait: "complete" });
   await waitFor(`!document.getElementById('app').hidden`);
   const after = await evaluate(`document.querySelectorAll('#log li').length`);
   check(after === before, `reload resumes the saved game (${before} log lines)`);
+  await waitFor(`${CERT}.classList.contains('on') || ${CERT}.classList.contains('error')`, 30000);
+  check(await evaluate(`${CERT}.classList.contains('on')`), "the resumed game is still certified");
   await shot("05-desktop");
   check(!(await evaluate(OVERFLOW)), "no horizontal overflow at 1280px");
 
