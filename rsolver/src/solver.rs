@@ -541,18 +541,39 @@ fn ldec(x: i32) -> Line {
     }
 }
 
-/// The A-safe fixed point in BIG mode (`TCB_BIG=1`): values are lines
-/// (`fix::Line`), every position starts at INF, and each evaluation keeps
-/// the componentwise min of the old line and the new one, so values only
-/// decrease. When a sweep finds nothing dirty, every evaluated position has
-/// v <= F(v): the table justifies itself. A position equal to its value one
-/// A-life level down is final, as in `solve` (that value is sound for the
-/// higher level by A-life monotonicity). Writes c to the table's values
-/// and returns b per position (digest order).
+/// The fixed point in BIG mode (`TCB_BIG=1`): values are lines
+/// (`fix::Line`) and every position starts at INF.
+///
+/// A-safe: each evaluation keeps the componentwise min of the old line and
+/// the new one, so values only decrease. When a sweep finds nothing dirty,
+/// every evaluated position has v <= F(v): the table justifies itself. A
+/// position equal to its value one A-life level down is final, as in
+/// `solve` (that value is sound for the higher level by A-life
+/// monotonicity).
+///
+/// B-win: a new line replaces the old one only if it is strictly smaller
+/// in B's choice order (`fix::lpick_low`: c + b * bigref, then c, then b).
+/// (A componentwise min of two B-win lines would not be an upper bound.)
+/// Soundness is by induction on time, not on monotonicity: every line
+/// ever stored was computed by one evaluation from lines stored earlier
+/// (or from lower A-life levels, finished earlier), each of which is by
+/// induction a sound upper bound, and an evaluation turns sound upper
+/// bounds into a sound upper bound. The initial INF claims nothing. So every
+/// stored line is a true B win, with a finite strategy (follow the
+/// evaluation's choices into lines stored earlier). Values only decrease
+/// in a total order on a finite set, so this terminates. Stopping at the
+/// value one level down (`fin`) only stops improvements.
+///
+/// Writes c to the table's values and returns b per position (digest
+/// order).
 pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
     let t0 = Instant::now();
     let (n, nb) = (sv.n, sv.nb);
-    assert!(c.big && !c.up() && !sv.pinned && c.lmax < 1 << 26);
+    assert!(c.big && !sv.pinned && c.lmax < 1 << 26);
+    let up = c.up();
+    let lost = if up { LINF } else { LNINF };
+    // the old line or the new one (see above)
+    let keep = |old: Line, new: Line| if up { fix::lpick_low(c.bigref, old, new) } else { fix::lmin(old, new) };
     let work: Vec<AtomicI32> = (0..n).map(|_| AtomicI32::new(lenc(LINF))).collect();
     let wget = |i: usize| ldec(work[i].load(Relaxed));
     let wset = |i: usize, v: Line| work[i].store(lenc(v), Relaxed);
@@ -564,12 +585,15 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
     for slot in 0..sv.nl {
         let l = sv.life_of_slot(slot) as i64;
         let first = slot * nb;
-        let floor = |j: usize| if slot > 0 { wget(first - nb + j) } else { LNINF };
+        // the best value possible: one level down, or at the lowest level
+        // A losing (A-safe) or B needing 1 life (B-win)
+        let floor = |j: usize| if slot > 0 { wget(first - nb + j) } else if up { Line { c: 1, b: 0 } } else { LNINF };
         let fin = |j: usize| bounds && wget(first + j) == floor(j);
         let value = |x: i64| -> Line {
             let b = (x >> 5) as usize;
             let u = x & 31;
-            if l - u < 1 { LNINF } else { wget(((l - u - 1) as usize) * nb + b) }
+            // (A dead: the guard has decided; as in `solve`)
+            if l - u < 1 { lost } else { wget(((l - u - 1) as usize) * nb + b) }
         };
         for j in 0..nb {
             dirty[j].store(!fin(j), Relaxed);
@@ -581,7 +605,7 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
             let ev: u64 = std::thread::scope(|sc| {
                 let hs: Vec<_> = (0..w)
                     .map(|k| {
-                        let (value, fin, progs, dirty, deps, wget, wset) = (&value, &fin, &progs, &dirty, &deps, &wget, &wset);
+                        let (value, fin, progs, dirty, deps, wget, wset, keep) = (&value, &fin, &progs, &dirty, &deps, &wget, &wset, &keep);
                         sc.spawn(move || {
                             let (lo, hi) = chunk(nb, w, k);
                             let (mut nv, mut tv) = (Vec::new(), Vec::new());
@@ -594,7 +618,7 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
                                 ev += 1;
                                 let v = c.norm_big(fix::run_packed_big(c, l, value, progs.prog(j), &mut nv, &mut tv));
                                 let old = wget(first + j);
-                                let v = fix::lmin(old, v);
+                                let v = keep(old, v);
                                 if v != old {
                                     wset(first + j, v);
                                     for &d in deps.of(j) {
@@ -613,7 +637,7 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
                 break;
             }
         }
-        let good = (0..nb).filter(|&j| wget(first + j) != LNINF).count();
+        let good = (0..nb).filter(|&j| wget(first + j) != lost).count();
         println!(
             "  A life {l}: {nb} positions ({good} not lost for the protagonist), {sweeps} sweeps, {evals} evaluations so far ({:.1}s)",
             t0.elapsed().as_secs_f64()
@@ -639,14 +663,17 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
 }
 
 /// The spot check of `solve_big`, against direct evaluation (every 500th
-/// position): v <= F(v) componentwise (the certificate condition), except
-/// possibly at positions equal to their value one level down; and how
-/// often v = F(v).
+/// position): keeping v against F(v) leaves v (A-safe: v <= F(v)
+/// componentwise, the certificate condition; B-win: F(v) is not strictly
+/// better), except possibly at positions equal to their value one level
+/// down; and how often v = F(v).
 pub fn spot_check_big(c: &Cfg, sv: &Solver, beta: &[i8]) {
     let (n, nb) = (sv.n, sv.nb);
     let w = jobs().min(nb.max(1));
     let bounds = std::env::var("TCB_NOBOUND").ok().as_deref() != Some("1");
     let line = |i: usize| Line { c: sv.get(i), b: beta[i] as i64 };
+    let up = c.up();
+    let keep = |old: Line, new: Line| if up { fix::lpick_low(c.bigref, old, new) } else { fix::lmin(old, new) };
     let (bad, badfin, eq, tot) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
     let next = AtomicUsize::new(0);
     std::thread::scope(|sc| {
@@ -663,7 +690,7 @@ pub fn spot_check_big(c: &Cfg, sv: &Solver, beta: &[i8]) {
                 if f == v {
                     eq.fetch_add(1, Relaxed);
                 }
-                if fix::lmin(v, f) != v {
+                if keep(v, f) != v {
                     if bounds && i >= nb && line(i - nb) == v {
                         badfin.fetch_add(1, Relaxed);
                     } else {
@@ -677,7 +704,7 @@ pub fn spot_check_big(c: &Cfg, sv: &Solver, beta: &[i8]) {
         }
     });
     let (bad, badfin, eq, tot) = (bad.into_inner(), badfin.into_inner(), eq.into_inner(), tot.into_inner());
-    println!("  spot check: {tot} positions, v = F(v) at {eq}, v <= F(v) fails at {bad} (and at {badfin} final from the level below)");
+    println!("  spot check: {tot} positions, v = F(v) at {eq}, keeping v fails at {bad} (and at {badfin} final from the level below)");
     if bad > 0 {
         println!("  SPOT CHECK FAILED at {bad} positions");
     } else {
@@ -695,6 +722,12 @@ pub fn big_stats(c: &Cfg, sv: &Solver, beta: &[i8]) {
     let isbig: Vec<bool> = (0..nb).map(|b| st(b).side_a.bf.iter().any(|w| w.counters == k)).collect();
     let nbig = isbig.iter().filter(|&&x| x).count();
     println!("BIG: K = {k}; {nbig} of {nb} bases have a BIG Walker");
+    let up = c.up();
+    let lose = c.lose();
+    // the position's line at n = 0 settles B life 20 in the protagonist's
+    // favour
+    let at20 = |v: i64| if up { v <= 20 } else { v >= 20 };
+    let (lbl20, lblinf) = if up { ("c <= 20", "B wins with any life") } else { ("c >= 20 (or any)", "safe at any B life") };
     for (name, lo) in [("all levels", 0), ("A life 20", sv.nl - 1)] {
         let mut hist = [0u64; fix::BMAX as usize + 1];
         let (mut pos, mut lost, mut inf, mut c20) = (0u64, 0u64, 0u64, 0u64);
@@ -706,31 +739,31 @@ pub fn big_stats(c: &Cfg, sv: &Solver, beta: &[i8]) {
                 if !isbig[b] {
                     nonbig += 1;
                     nonbig_beta += (beta[i] != 0) as u64;
-                    nonbig_lost += (v <= NINF) as u64;
+                    nonbig_lost += (v == lose) as u64;
                     continue;
                 }
                 pos += 1;
-                if v <= NINF {
+                if v == lose {
                     lost += 1;
                     continue;
                 }
-                if v >= INF {
+                if (!up && v >= INF) || (up && v <= 1 && beta[i] == 0) {
                     inf += 1;
                 } else {
                     hist[beta[i] as usize] += 1;
                 }
-                c20 += (v >= 20) as u64;
+                c20 += at20(v) as u64;
             }
         }
         let h: Vec<String> = hist.iter().enumerate().map(|(b, x)| format!("{b}:{x}")).collect();
         println!(
-            "BIG ({name}): {pos} BIG positions, {lost} lost, {inf} safe at any B life; beta of the rest {}; c >= 20 (or any) at {c20}",
+            "BIG ({name}): {pos} BIG positions, {lost} lost for the protagonist, {inf} {lblinf}; beta of the rest {}; {lbl20} at {c20}",
             h.join(" ")
         );
         println!("BIG ({name}): {nonbig} non-BIG positions, {nonbig_lost} lost, {nonbig_beta} with beta != 0");
     }
-    // A life 20, BIG positions: (positions, lost, c >= 20) by B's Walker
-    // and by B's Thopters
+    // A life 20, BIG positions: (positions, lost, settled at 20) by B's
+    // Walker and by B's Thopters
     let slot = sv.nl - 1;
     let huge = c.ot + 1;
     let mut by_w: std::collections::BTreeMap<String, (u64, u64, u64)> = Default::default();
@@ -749,18 +782,18 @@ pub fn big_stats(c: &Cfg, sv: &Solver, beta: &[i8]) {
         let bt = s.side_b.thop_u + s.side_b.thop_t;
         for e in [by_w.entry(bw).or_default(), by_t.entry(bt).or_default()] {
             e.0 += 1;
-            if v <= NINF {
+            if v == lose {
                 e.1 += 1;
-            } else if v >= 20 {
+            } else if at20(v) {
                 e.2 += 1;
             }
         }
     }
-    println!("BIG at A life 20, by B's Walker: (positions, lost, c >= 20)");
+    println!("BIG at A life 20, by B's Walker: (positions, lost, {lbl20})");
     for (k, v) in &by_w {
         println!("  B Walker {k}: {v:?}");
     }
-    println!("BIG at A life 20, by B's Thopters: (positions, lost, c >= 20)");
+    println!("BIG at A life 20, by B's Thopters: (positions, lost, {lbl20})");
     for (k, v) in &by_t {
         println!("  B Thopters {k}: {v:?}");
     }

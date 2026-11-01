@@ -78,22 +78,32 @@ fn cfg_from_env(prot: Player, t: u32, tt: u32, lmax: i64) -> Cfg {
     }
 }
 
-/// `fix safe A` with `TCB_BIG=1`: one A Walker unbounded (see `fix::Line`).
+/// `fix safe A` or `fix win B` with `TCB_BIG=1`: one A Walker unbounded
+/// (see `fix::Line`). A-safe: A's Walker past its cap T becomes BIG.
+/// B-win: A's Walker past TCB_OT becomes BIG instead of saturating, and a
+/// second one is a loss for B.
 fn big_cmd(c: &Cfg, starter: &str) {
     let k = c.big_k();
-    if c.prot != Player::A || c.full_a {
-        eprintln!("TCB_BIG=1 needs `fix safe A` (and no TCB_FULLA)");
+    if c.full_a {
+        eprintln!("TCB_BIG=1 doesn't work with TCB_FULLA");
         std::process::exit(2);
     }
-    if !(k > (c.ot + 1) + c.ott && k > 20) {
-        eprintln!(
-            "TCB_BIG=1 needs K = T + 1 = {k} > (TCB_OT + 1) + TCB_OTT = {} and K > 20, so that BIG outsizes every B creature total",
-            (c.ot + 1) + c.ott
-        );
+    // B's largest power or toughness total: its Walker and its Thopters
+    let btotal = if c.prot == Player::A { (c.ot + 1) + c.ott } else { c.t + c.tt };
+    if c.prot == Player::A && !(k > btotal && k > 20) {
+        eprintln!("TCB_BIG=1 needs K = T + 1 = {k} > (TCB_OT + 1) + TCB_OTT = {btotal} and K > 20, so that BIG outsizes every B creature total");
+        std::process::exit(2);
+    }
+    if c.prot == Player::B && k <= btotal {
+        eprintln!("TCB_BIG=1 needs K = TCB_OT + 1 = {k} > T + TT = {btotal}, so that BIG outsizes every B creature total");
+        std::process::exit(2);
+    }
+    if c.prot == Player::B && std::env::var("TCB_RANKS").ok().as_deref() == Some("1") {
+        eprintln!("TCB_BIG=1 doesn't keep ranks");
         std::process::exit(2);
     }
     if !c.strict("dmg") || !c.strict("die") || !c.strict("many") {
-        println!("warning: TCB_LAX is set, so B's caps are relaxed and the result is not sound");
+        println!("warning: TCB_LAX is set, so the opponent's caps are relaxed and the result is not sound");
     }
     println!("BIG mode: K = {k}, reference n = {}, BIG check {}", c.bigref, if c.bigcheck_on() { "on" } else { "off" });
     let t0 = Instant::now();
@@ -107,11 +117,21 @@ fn big_cmd(c: &Cfg, starter: &str) {
     let s0 = model::init(pl(starter));
     let (sv, progs) = solver::reach(c, &s0, &dir);
     println!("{} positions ({} bases at {} levels)", sv.n, sv.nb, sv.nl);
+    if c.prot == Player::B {
+        use std::sync::atomic::Ordering::Relaxed;
+        println!(
+            "second BIG Walker (a loss for B): {} edges in {} of {} compiled turns",
+            fix::SECOND_EDGES.load(Relaxed),
+            fix::SECOND_TURNS.load(Relaxed),
+            sv.nb
+        );
+    }
     let beta = solver::solve_big(c, &sv, progs);
     let i0 = sv.id(&fix::key_gen(false, &s0)).unwrap();
     let v = sv.get(i0);
     println!(
-        "A safe (BIG) from the start position: {}, c = {}, beta = {}  ({:.1}s)",
+        "{} (BIG) from the start position: {}, c = {}, beta = {}  ({:.1}s)",
+        if c.prot == Player::A { "A safe" } else { "B win" },
         show(c, v),
         if v >= INF { "inf".into() } else if v <= NINF { "-inf".into() } else { v.to_string() },
         beta[i0],
@@ -135,8 +155,8 @@ fn fix_cmd(mode: &str, who: &str, t: &str, tt: &str, lmax: &str, starter: &str) 
     let prot = pl(who);
     let c = cfg_from_env(prot, t, tt, lmax);
     if c.big {
-        if mode != "safe" {
-            eprintln!("TCB_BIG=1 needs `fix safe A`");
+        if (prot == Player::A) != (mode == "safe") {
+            eprintln!("TCB_BIG=1 needs `fix safe A` or `fix win B`");
             std::process::exit(2);
         }
         return big_cmd(&c, starter);

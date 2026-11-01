@@ -37,9 +37,10 @@ pub struct Cfg {
     pub arules: Rules,
     pub brules: Rules,
     pub lax: Vec<String>,
-    /// The parametric big Walker (`TCB_BIG=1`, A-safe only): see `Line`.
+    /// The parametric big Walker (`TCB_BIG=1`, A-safe or B-win): see `Line`.
     pub big: bool,
-    /// A's choice between lines maximises c + beta * bigref (`TCB_BIGREF`).
+    /// The protagonist's choice between lines is the best at n = bigref
+    /// (`TCB_BIGREF`).
     pub bigref: i64,
     /// Check every BIG state against BIG + 3 (`TCB_BIGCHECK=1`; always on
     /// in debug builds).
@@ -95,6 +96,7 @@ impl Cfg {
                         let n = ps.bf[*i as usize].counters;
                         n < self.t
                             || (self.big
+                                && self.prot == Player::A
                                 && (n == self.big_k() || (n == self.t && !ps.bf.iter().any(|w| w.counters == self.big_k()))))
                     }
                     _ => true,
@@ -139,6 +141,25 @@ impl Cfg {
         if !(matches!(s.pend, Pending::ChooseDamage) && matches!(m, Move::Assign(_))) {
             return false;
         }
+        if self.big && self.prot == Player::B {
+            // B-win BIG mode: A's only Walker at the saturation size is BIG
+            // (a second one is a loss for B, see `big_flags`). Its
+            // unblocked hit is an `F_HIT` edge, not a huge event. The other
+            // two huge events can't happen, because K exceeds every total
+            // of B's (checked when the mode starts); check that here.
+            let huge = self.huge();
+            let att = s.side(s.active);
+            let def = s.side(s.active.opp());
+            for (&i, bs) in s.cmb.atk.iter().zip(s.cmb.blk.iter()) {
+                if s.active == Player::A && att.bf[i as usize].counters >= huge {
+                    assert!(bs.iter().map(|&b| blocker_toughness(def, b)).sum::<u32>() < huge, "BIG blocked by a total of K");
+                }
+                if s.active == Player::B {
+                    assert!(att.bf[i as usize].counters < huge, "a B Walker of K");
+                }
+            }
+            return false;
+        }
         let o = self.prot.opp();
         let huge = self.huge();
         let att = s.side(s.active);
@@ -160,15 +181,19 @@ impl Cfg {
                 }))
     }
 
-    /// BIG mode: the size K = t + 1 of a BIG Walker, which stands for K + n
-    /// counters for an unknown n >= 0.
+    /// BIG mode: the size K of a BIG Walker, which stands for K + n
+    /// counters for an unknown n >= 0. A-safe: t + 1 (A's cap plus one).
+    /// B-win: ot + 1 (where A's Walkers would saturate).
     pub fn big_k(&self) -> u32 {
-        self.t + 1
+        if self.prot == Player::A { self.t + 1 } else { self.ot + 1 }
     }
 
     /// BIG mode: the flags of a legal move's edge. `F_PUMP`: a pump on the
     /// BIG Walker (n -> n + 1; the caller puts its counters back to K).
-    /// `F_CREATE`: a pump from t to K, which makes a BIG Walker with n = 0.
+    /// `F_CREATE`: a pump from K - 1 to K, which makes a BIG Walker with
+    /// n = 0. `F_SECOND`: the same pump while A already has a BIG Walker;
+    /// the edge is a loss for the protagonist (A-safe forbids the pump, and
+    /// in B-win it counts as a huge event: sound, pessimistic for B).
     /// `F_HIT`: combat damage in which the BIG Walker is unblocked, so B
     /// takes n more than the model deals.
     pub fn big_flags(&self, s: &State, m: &Move) -> i64 {
@@ -181,9 +206,8 @@ impl Cfg {
                 let before = s.side_a.bf[*i as usize].counters;
                 if before == k {
                     F_PUMP
-                } else if before == self.t {
-                    debug_assert!(!s.side_a.bf.iter().any(|w| w.counters == k));
-                    F_CREATE
+                } else if before == k - 1 {
+                    if s.side_a.bf.iter().any(|w| w.counters == k) { F_SECOND } else { F_CREATE }
                 } else {
                     0
                 }
@@ -200,8 +224,9 @@ impl Cfg {
     pub fn big_fix(&self, f: i64, m: &Move, s2: &mut State) {
         if f & F_PUMP != 0 {
             let Move::Pump(i) = m else { unreachable!() };
+            // K + 1, or already K where the opponent's Walkers saturate
             let w = &mut s2.side_a.bf[*i as usize];
-            assert_eq!(w.counters, self.big_k() + 1);
+            assert!(w.counters == self.big_k() + 1 || w.counters == self.big_k());
             w.counters = self.big_k();
         }
     }
@@ -262,11 +287,18 @@ impl Cfg {
 pub const F_HIT: i64 = 1;
 pub const F_PUMP: i64 = 2;
 pub const F_CREATE: i64 = 4;
+pub const F_SECOND: i64 = 8;
 
-/// A value in BIG mode: A is safe at B life L whenever L <= c + b * n,
-/// where the position's BIG Walker has K + n counters. Positions with no
-/// BIG Walker have b = 0. INF and NINF (in c, with b = 0) are kept as
-/// special values.
+/// Edges that make a second BIG Walker (B-win; see `F_SECOND`): how many
+/// were compiled, and in how many turns.
+pub static SECOND_EDGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SECOND_TURNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A value in BIG mode, where the position's BIG Walker has K + n
+/// counters. A-safe: A is safe at B life L whenever L <= c + b * n (a
+/// lower bound for every n >= 0). B-win: B wins whenever L >= c + b * n (an
+/// upper bound for every n >= 0). Positions with no BIG Walker have b = 0.
+/// INF and NINF (in c, with b = 0) are kept as special values.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Line {
     pub c: i64,
@@ -316,13 +348,59 @@ pub fn lpick(r: i64, a: Line, b: Line) -> Line {
     }
 }
 
+/// B-win, A's nodes: componentwise max, an upper bound on the pointwise
+/// max for every n >= 0. INF (B never wins) absorbs, NINF is the identity.
+#[inline]
+pub fn lmaxc(a: Line, b: Line) -> Line {
+    if a.c <= NINF {
+        b
+    } else if b.c <= NINF {
+        a
+    } else if a.c >= INF || b.c >= INF {
+        LINF
+    } else {
+        Line { c: a.c.max(b.c), b: a.b.max(b.b) }
+    }
+}
+
+/// B-win, B's nodes: one of the two, the smaller at n = r (ties by c,
+/// then b: the min of a total order). Either is an upper bound on the min.
+#[inline]
+pub fn lpick_low(r: i64, a: Line, b: Line) -> Line {
+    if a.c <= NINF || b.c <= NINF {
+        LNINF
+    } else if a.c >= INF {
+        b
+    } else if b.c >= INF {
+        a
+    } else if (a.c + a.b * r, a.c, a.b) <= (b.c + b.b * r, b.c, b.b) {
+        a
+    } else {
+        b
+    }
+}
+
+/// The protagonist's node operation (A-safe: `lpick`; B-win: `lpick_low`).
+#[inline]
+pub fn lbest(up: bool, r: i64, a: Line, b: Line) -> Line {
+    if up { lpick_low(r, a, b) } else { lpick(r, a, b) }
+}
+/// The opponent's node operation (A-safe: `lmin`; B-win: `lmaxc`).
+#[inline]
+pub fn lworst(up: bool, a: Line, b: Line) -> Line {
+    if up { lmaxc(a, b) } else { lmin(a, b) }
+}
+
 /// An edge in BIG mode: the child's value seen from the parent. `F_CREATE`
 /// reads the child at n = 0, `F_PUMP` at n + 1, a change d in B's life
 /// shifts c, and `F_HIT` adds the n extra damage. After combat damage
 /// (d < 0) B's death is folded in as in `shift`: B dies when L <= -d (+ n
-/// with `F_HIT`), and the larger of the two lines at `r` is kept.
+/// with `F_HIT`). A-safe (`up` false): the larger of the two lines at `r`
+/// is kept (A is safe either way). B-win (`up`): B must also survive, L >=
+/// 1 - d (+ n with `F_HIT`), and the componentwise max is kept, an upper
+/// bound on the pointwise max.
 #[inline]
-pub fn ltrans(r: i64, mut v: Line, d: i64, f: i64) -> Line {
+pub fn ltrans(up: bool, r: i64, mut v: Line, d: i64, f: i64) -> Line {
     let hit = (f & F_HIT != 0) as i64;
     if !v.special() {
         if f & F_CREATE != 0 {
@@ -335,7 +413,7 @@ pub fn ltrans(r: i64, mut v: Line, d: i64, f: i64) -> Line {
         v.b += hit;
     }
     if d < 0 {
-        v = lpick(r, Line { c: -d, b: hit }, v);
+        v = if up { lmaxc(Line { c: 1 - d, b: hit }, v) } else { lpick(r, Line { c: -d, b: hit }, v) };
     } else {
         debug_assert!(hit == 0);
     }
@@ -348,6 +426,17 @@ impl Cfg {
     /// so is one with c below -lmax (which keeps the iteration finite). All
     /// of these only lower the value.
     pub fn norm_big(&self, v: Line) -> Line {
+        if self.up() {
+            // B-win: only raise. B needs at least 1 life; more than lmax, or
+            // b above BMAX, is "never"; a negative b is raised to 0.
+            if v.c <= NINF {
+                return Line { c: 1, b: 0 };
+            }
+            if v.c >= INF || v.c > self.lmax || v.b > BMAX {
+                return LINF;
+            }
+            return Line { c: v.c.max(1), b: v.b.max(0) };
+        }
         if v.c >= INF {
             return LINF;
         }
@@ -557,23 +646,25 @@ fn eval_go_big(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> Line, local: &mut HashM
         return v;
     }
     let mine = to_move(s) == c.prot;
-    let mut acc = if mine { LNINF } else { LINF };
+    let up = c.up();
+    let lost = if up { LINF } else { LNINF };
+    let mut acc = if mine { lost } else if up { LNINF } else { LINF };
     for m in c.moves_for(s) {
         let v = if c.huge_event(s, &m) {
-            LNINF
+            lost
         } else {
             let mut s2 = step(s, &m);
             c.clamp(&mut s2);
-            if c.too_many(&s2) {
-                LNINF
+            let f = c.big_flags(s, &m);
+            if c.too_many(&s2) || f & F_SECOND != 0 {
+                lost
             } else {
-                let f = c.big_flags(s, &m);
                 c.big_fix(f, &m, &mut s2);
                 let d = s2.side_b.life as i64 - s.side_b.life as i64;
-                ltrans(c.bigref, eval_go_big(c, lookup, local, &s2, false), d, f)
+                ltrans(up, c.bigref, eval_go_big(c, lookup, local, &s2, false), d, f)
             }
         };
-        acc = if mine { lpick(c.bigref, acc, v) } else { lmin(acc, v) };
+        acc = if mine { lbest(up, c.bigref, acc, v) } else { lworst(up, acc, v) };
     }
     local.insert(k, acc);
     acc
@@ -628,6 +719,8 @@ pub fn compile(c: &Cfg, tgt: &dyn Fn(&State) -> i64, s: &State) -> (Vec<i32>, us
         nodes: usize,
         lost: i64,
         won: i64,
+        // edges with `F_SECOND`
+        second: u64,
     }
     fn push2(buf: &mut Vec<i32>, r: Cref) {
         match r {
@@ -695,6 +788,10 @@ pub fn compile(c: &Cfg, tgt: &dyn Fn(&State) -> i64, s: &State) -> (Vec<i32>, us
             return Cref::Const(cx.lost);
         }
         let f = cx.c.big_flags(s, m);
+        if f & F_SECOND != 0 {
+            cx.second += 1;
+            return Cref::Const(cx.lost);
+        }
         cx.c.big_fix(f, m, &mut s2);
         let d = s2.side_b.life as i64 - s.side_b.life as i64;
         let u = s.side_a.life as i64 - s2.side_a.life as i64;
@@ -738,8 +835,13 @@ pub fn compile(c: &Cfg, tgt: &dyn Fn(&State) -> i64, s: &State) -> (Vec<i32>, us
         }
     }
     let lost = if c.lose() == NINF { 0 } else { 1 };
-    let mut cx = Ctx { c, tgt, local: HashMap::default(), buf: vec![], nodes: 0, lost, won: 1 - lost };
+    let mut cx = Ctx { c, tgt, local: HashMap::default(), buf: vec![], nodes: 0, lost, won: 1 - lost, second: 0 };
     let root = go(&mut cx, s, true);
+    if cx.second > 0 {
+        use std::sync::atomic::Ordering::Relaxed;
+        SECOND_EDGES.fetch_add(cx.second, Relaxed);
+        SECOND_TURNS.fetch_add(1, Relaxed);
+    }
     match root {
         Cref::Ref(1, n, 0, 0) if n as usize == cx.nodes - 1 => {}
         r => {
@@ -1026,8 +1128,10 @@ pub fn run_packed(c: &Cfg, l: i64, value: &dyn Fn(i64) -> i64, p: &[u8], nv: &mu
 /// `run_packed` in BIG mode (a program packed with `big`), with lines.
 #[inline]
 pub fn run_packed_big(c: &Cfg, l: i64, value: &dyn Fn(i64) -> Line, p: &[u8], nv: &mut Vec<Line>, tv: &mut Vec<Line>) -> Line {
-    debug_assert!(c.big && !c.up());
+    debug_assert!(c.big);
     let r = c.bigref;
+    let up = c.up();
+    let lost = if up { LINF } else { LNINF };
     let mut pc = 0;
     let nt = get_varint(p, &mut pc) as usize;
     tv.clear();
@@ -1042,7 +1146,7 @@ pub fn run_packed_big(c: &Cfg, l: i64, value: &dyn Fn(i64) -> Line, p: &[u8], nv
         let h = get_varint(p, &mut pc);
         let mine = h & 1 == 0;
         let cnt = h >> 1;
-        let mut acc = if mine { LNINF } else { LINF };
+        let mut acc = if mine { lost } else if up { LNINF } else { LINF };
         for _ in 0..cnt {
             let w = get_varint(p, &mut pc);
             let val = (w >> 3) as usize;
@@ -1056,9 +1160,9 @@ pub fn run_packed_big(c: &Cfg, l: i64, value: &dyn Fn(i64) -> Line, p: &[u8], nv
                 let d = (z >> 1) ^ -(z & 1);
                 let g = get_varint(p, &mut pc) as i64;
                 let f = get_varint(p, &mut pc) as i64;
-                v = if g > 0 && l <= g { LNINF } else { ltrans(r, v, d, f) };
+                v = if g > 0 && l <= g { LNINF } else { ltrans(up, r, v, d, f) };
             }
-            acc = if mine { lpick(r, acc, v) } else { lmin(acc, v) };
+            acc = if mine { lbest(up, r, acc, v) } else { lworst(up, acc, v) };
         }
         nv.push(acc);
     }
