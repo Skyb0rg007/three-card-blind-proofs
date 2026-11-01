@@ -362,22 +362,17 @@ still re-solved with `TCB_FULLOPP=1`.
 
 ## Results so far
 
-All results use `lmax = 60` and the exploration filter for the protagonist.
+Unless a row says otherwise, results use `lmax = 60` and the exploration filter.
 The spot check passes in every run.
 
-| start | check | caps t/tt | result |
+| start | check | caps | result |
 |---|---|---|---|
 | fortress¹ | B-safe | 4/4 | **safe with any B life** (155k positions; also with `TCB_FULLOPP=1`, 229k) |
 | fortress¹ | A-safe | 6/6 | not safe (508k); still not safe with every rule in R4 relaxed |
 | opening, A first | B-safe, A's life pinned | 4/4 | not safe (75k); with every rule in R4 relaxed, B needs 34 life |
 | opening, A first | B-safe | 4/4 | not safe (1.43M positions, 10 min) |
-
 | lone-walker fortress² | B-wins (lfp) | B Walker 3, tt 10, A huge > 10 | A on 4 life: **B wins with any life** (161k; also with every legal A move, 207k) |
 | same | B-wins | B Walker 3, tt 14, A huge > 12 | A on 8: **any life** (740k; every legal A move, 963k); A on 12: **B life ≥ 3** (1.3M; every legal A move, 1.72M) |
-
-² A active; A: one 3/3 Walker, no Thopters. B: one 1/1 Walker, no Thopters,
-Elixir in hand.
-
 | two A Walkers³ | B-wins, macro B | B Walker 4, tt 10, A huge > 8 | A on 4 life: **B wins with B life ≥ 9** (1.23M; every legal A move, 2.32M) |
 | opening, A first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 5.9 h) |
 | same | B-wins, macro B | B Walker 4, tt 14, A huge > 14 | **B wins with B life ≥ 25** (47.8M positions, 2.7 h on 12 workers); the caps above were binding |
@@ -394,29 +389,40 @@ Elixir in hand.
 | same | same, **every legal A move** (`TCB_FULLOPP=1`) | same | **B safe with B life ≥ 20** (81.7M positions = 4.09M bases × 20, 18.6 min, 3.2G program words). Sound: A is unrestricted, and B's macro, caps, A's saturation and `lmax` only weaken B. **A can't force a win from the real opening.** |
 | same | **certificate check** (`main.exe certify`, extracted `Checker.check_node`) | same | **all 90.8M entries pass** (every base, A-life level and Walker order the lookup answers for; 27 min on 14 workers, 6.9 GB). With `Saturation.certified_opening` (closed under the global context) this makes "B does not lose from the A-first opening" a Rocq theorem, trusting only the extraction, the OCaml driver's enumeration of the lookup's domain, and the OCaml toolchain. |
 | opening, **B first** | B-safe, B macro `blk,atk2,dmg`, every legal A move, `lmax` 100 | B Walker 10, tt 10, A huge > 10, ott 20 | **B safe with B life ≥ 14** (81.7M positions, the same 4.09M bases as A first; 5.0 min). Sound, so **A can't force a win from the B-first opening either.** Certificate check: all 90.8M entries pass (28 min); certified. |
+| opening, B first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 6.1 h) |
 | opening, B first | B-wins, B macro `blk,atk2,dmg`, A filtered | B Walker 4, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 17** (59.4M positions = 2.97M bases × 20, 4.4 min). B starts on 20, so this matches the folklore that the Elixir player wins going first. Not yet sound: A is filtered. |
 | same | same, **every legal A move** (`TCB_FULLOPP=1`) | same | **B wins with B life ≥ 17** (122.7M positions = 6.13M bases × 20, 7.8 min, 5.3 GB). Sound: B's caps and macro only restrict B, A is unrestricted and saturation only adds losses for B. **B, going first, can force a win.** |
 | same | **win certificate** (`TCB_RANKS=1`: rounds within each A-life level, every value change logged; `main.exe certify-win`, extracted `WinCert.check_win`) | same | **certified**: the 1.10M records B's strategy uses from the opening (1.51M states with Walker orders) all pass, 0 failures (pass 1 collects them, pass 2 re-checks with the lookup restricted to them; 12 min). The opening record has rank 19000017 (A on 20 life, round 17) and B on 17 life. With `WinCert.certified_win_opening` (closed under the global context) this makes `wins PB (init PB)` a Rocq theorem, trusting the extraction and the driver. |
 | opening, A first | B-wins, B macro `blk,atk2,dmg`, A filtered | **B Walker 6**, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (77.2M positions, 6.6 min): the same as with B's Walker capped at 4. |
 | same | same | **B Walker 10**, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (112M positions, 11 min). A bigger B Walker doesn't help B going second; with A filtered this is optimistic for B, so with every legal A move B needs at least as much. |
 
-**What the A-first numbers say.** A's win stops at B life 15 whatever is
-relaxed on A's side (caps, macro, filter, R4). Only B's filter is left, and
-lifting it can only lower the value. B's win stops at 25 under every change
-tried on B's side (caps 14 and 18, the macro and `atk2`). So the real
-thresholds are very likely A wins iff B life ≤ 15 and B wins iff B life ≥ 25:
-from the real start, at B life 20, **neither player can force a win**. To
-prove it, the safety checks must reach 20: A-safe with B life ≥ 20 (so B
-can't win) and B-safe with B life ≤ 20 (so A can't). The B half is now done:
-B-safe at B Walker 10, tt 10, with every legal A move, gives exactly 20.
-For A, capped Walkers and Thopters make the check collapse onto the win check
-(A-safe = A-win = 15 at 6/6, 10/10 and 14/14), because a long game always reaches a
-cap and the cap is a loss for the protagonist. This is the growth
-equilibrium described below.
-| opening, B first | B-wins, macro B | B Walker 4, tt 12, A huge > 10 | **no B win** within these caps (19.3M positions, 6.1 h) |
+¹ A active; A: life 10, one 3/3 Walker, 2 Thopters. B: life 6, one 1/1
+Walker, 2 Thopters, Elixir in hand.
+
+² A active; A: one 3/3 Walker, no Thopters. B: one 1/1 Walker, no Thopters,
+Elixir in hand.
 
 ³ A active; A: 3/3 and 3/3, no Thopters. B: a 3/3, no Thopters, Elixir in
 hand.
+
+**What the A-first numbers say.** A's win stops at B life 15 whatever is
+relaxed on A's side (caps, macro, filter, R4). Only B's filter is left, and
+lifting it can only lower the value. B's win stops at 25 under every change
+tried on B's side (caps 14 and 18, B's Walker capped at 4, 6 or 10, the
+macro and `atk2`). So the real thresholds are very likely A wins iff B life
+≤ 15 and B wins iff B life ≥ 25: from the real start, at B life 20,
+**neither player can force a win**. To prove it, the safety checks must
+reach 20: A-safe with B life ≥ 20 (so B can't win) and B-safe with B life
+≤ 20 (so A can't). The B half is done and certified: B-safe at B Walker 10,
+tt 10, with every legal A move, gives exactly 20. For A, capped Walkers and
+Thopters make the check collapse onto the win check (A-safe = A-win = 15 at
+6/6, 10/10 and 14/14), because a long game always reaches a cap and the cap
+is a loss for the protagonist. This is the growth equilibrium described
+below.
+
+**B first is different.** With caps 14, B wins with B life ≥ 17 against
+every legal A move, and the win is certified. The earlier "no B win" at tt
+12, A huge > 10 was a cap artifact.
 
 `TCB_LINE=N` prints a line of play from a solved B win. Values are computed
 in synchronous rounds within each A-life level. B plays a move that keeps
@@ -437,9 +443,6 @@ Thopter monotonicity. Every value comes from a finite strategy: a cycle
 that gains B life only lowers the life B needs by looping a bounded number
 of times before the winning line. B's own moves may come from the filter,
 since it is the protagonist.
-
-¹ A active; A: life 10, one 3/3 Walker, 2 Thopters. B: life 6, one 1/1
-Walker, 2 Thopters, Elixir in hand.
 
 The failures are not caused by R4 (relaxing it does not rescue them). They
 come from the protagonist's *own* caps (R3) and from `lmax`.
