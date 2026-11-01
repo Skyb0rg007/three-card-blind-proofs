@@ -581,6 +581,11 @@ for the damage it deals unblocked. So "A capped at `t`" loses for A only by
 damage, and B's Elixir outpaces that: a cycle (activate for 2, recast for 1,
 2 rounds) banks 5 life, 2.5 a round, while A's two Walkers together grow at
 most 2 counters a round (City makes 2 mana). The strict B-win forbids exactly
-this, since B must chump every huge attacker. A sound B-win that allows it
-would track B's life relative to A's Walker sizes (the pair (B life, A Walker)
-shifted together is the same game while the Walker can't die).
+this, since B must chump every huge attacker.
+
+Raising B's life and an immortal A Walker together is *not* the same game: it
+covers one unblocked hit, but every later hit costs B the Walker's full size.
+So cutting such a Walker to K and charging B one life per counter cut is
+unsound (tried: it would give B the win from 16, with every legal A move).
+A sound treatment has to charge each hit its real size, which keeps the exact
+size in the state.
