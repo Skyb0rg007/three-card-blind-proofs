@@ -43,7 +43,9 @@ This repo contains a [Rocq][] mechanization of the problem and a proof of the so
 
 Rocq also proves that the game never gets stuck: in every position without a
 winner, the player to move has a legal move (`never_stuck` in
-`spec/Claims.v`).
+`spec/Claims.v`). It also proves that legal moves keep every position
+well formed: no card is created or lost, and combat only refers to Walkers and
+Thopters that exist (`preservation`).
 
 `STRATEGY.md` describes, in plain Magic terms, how B wins when B plays first.
 
