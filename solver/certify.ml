@@ -31,15 +31,15 @@ let open_table dir =
   let meta = Fix.read_meta dir in
   let get k = try List.assoc k meta with Not_found -> failwith (dir ^ ": meta has no " ^ k) in
   let geti k = int_of_string (get k) in
-  if get "mode" <> "safe" || get "who" <> "B" then failwith "certify: needs a B-safe table";
+  if get "who" <> "B" then failwith "certify: needs a table for B";
   if geti "fulla" <> 0 then failwith "certify: needs A's life in the keys (fulla=0)";
   let nb = geti "nb" and nl = geti "nl" in
   { sv = Fix.open_dir dir ~nb ~nl ~write:false; h = geti "ot" + 1; ott = geti "ott"; tt = geti "tt";
     lmax = geti "lmax" }
 
-(* The table's entry for [s], if [s] is a turn start in key form: B on 0
+(* The table position of [s], if [s] is a turn start in key form: B on 0
    life, A's graveyard empty, A's life one of the table's levels. *)
-let lookup t s =
+let index t s =
   let sv = t.sv in
   if s.pend <> Window (Upkeep, s.active, false) || s.cmb <> no_combat || s.sideB.life <> 0
      || s.sideA.gy_w <> 0 || s.sideA.life < 1 || s.sideA.life > sv.Fix.nl then None
@@ -49,11 +49,15 @@ let lookup t s =
     | k ->
       match Fix.id sv k with
       | exception Not_found -> None
-      | i ->
-        if Fix.base_key_at sv (i mod sv.Fix.nb) <> Fix.base_of k then None
-        else
-          let v = Fix.get sv i in
-          if v >= Fix.inf || v > t.lmax then None else Some (max v 0)
+      | i -> if Fix.base_key_at sv (i mod sv.Fix.nb) <> Fix.base_of k then None else Some i
+
+let finite t v = v < Fix.inf && v <= t.lmax
+
+(* The table's entry for [s]. *)
+let lookup t s =
+  match index t s with
+  | Some i -> let v = Fix.get t.sv i in if finite t v then Some (max v 0) else None
+  | None -> None
 
 (* The oracle: [check_node]'s search, memoised. *)
 module H = Hashtbl.Make (struct
@@ -189,3 +193,151 @@ let debug dir hex v =
         (match lk (key t.h t.tt s) with Some v -> string_of_int v | None -> "none") s.sideB.life (Show.state s)
   in
   go 0 s
+
+(* ** Win certificates (WinCert.v)
+
+   A B-win table solved with TCB_RANKS=1 logs every value change: position
+   [i] has records (round, value) in [hrec] from offset [hidx.{i}]. Record
+   ranks are lexicographic, A's life level first: [slot * level + round].
+   Only the records B's strategy from the opening uses are checked: an
+   untrusted pass collects them by running [check_win] with a logging
+   lookup, then every collected record is checked again with [lookup]
+   restricted to exactly that set. *)
+
+let level = 1_000_000
+
+type wtable = {
+  wt : table;
+  hidx : (int64, Bigarray.int64_elt, Bigarray.c_layout) Bigarray.Array1.t;
+  hrec : (int32, Bigarray.int32_elt, Bigarray.c_layout) Bigarray.Array1.t;
+}
+
+let open_win dir =
+  let t = open_table dir in
+  let meta = Fix.read_meta dir in
+  if List.assoc "mode" meta <> "win" then failwith "certify-win: needs a win table";
+  let n = t.sv.Fix.n in
+  let hidx = Fix.(Disk.map Bigarray.int64 (Filename.concat dir "hidx") (n + 1) ~write:false) in
+  let nrec = Int64.to_int hidx.{n} in
+  { wt = t; hidx; hrec = Disk.map Bigarray.int32 (Filename.concat dir "hrec") (2 * nrec) ~write:false }
+
+let recs w i = (Int64.to_int w.hidx.{i}, Int64.to_int w.hidx.{i + 1})
+let rank w i p = ((i / w.wt.sv.Fix.nb) * level) + Int32.to_int w.hrec.{2 * p}
+let rval w p = Fix.of32 (Int32.to_int w.hrec.{(2 * p) + 1})
+
+(* The value of position [i]'s record of rank [r]. *)
+let record w i r =
+  let a, b = recs w i in
+  let rec go p = if p >= b then None else if rank w i p = r then Some (rval w p) else go (p + 1) in
+  match go a with Some v when finite w.wt v -> Some (max v 0) | _ -> None
+
+(* The latest record of [i] below rank [r]. *)
+let below_rec w i r =
+  let a, b = recs w i in
+  let best = ref None in
+  for p = a to b - 1 do
+    if rank w i p < r && finite w.wt (rval w p) then best := Some (rank w i p)
+  done;
+  !best
+
+let win_oracle w lk below =
+  let t = w.wt in
+  let memo = H.create 1024 in
+  let rec ok r root s =
+    match winner s with
+    | Some PB -> true
+    | Some PA -> false
+    | None ->
+      if (not root) && is_turn_start s then
+        let k = key t.h t.tt s in
+        (match below k r with
+         | Some r' -> r' < r && (match lk k r' with Some v -> v <= s.sideB.life | None -> false)
+         | None -> false)
+      else if huge_event t.h s then false
+      else
+        match H.find_opt memo s with
+        | Some x -> x
+        | None ->
+          let x =
+            match to_move s with
+            | PB -> List.exists (next r s) (moves s)
+            | PA -> moves s <> [] && List.for_all (next r s) (moves s)
+          in
+          H.replace memo s x;
+          x
+  and next r s m =
+    let s' = step s m in
+    (not (too_many t.ott s')) && ok r false s'
+  in
+  (memo, ok)
+
+(* The states a record stands for: every order of the Walkers. *)
+let record_states w i =
+  let t = w.wt in
+  let s0 = Fix.of_key (Fix.key_at t.sv i) in
+  let s0 = { s0 with sideB = { s0.sideB with life = 0 } } in
+  List.concat_map (fun abf ->
+      List.map (fun bbf -> { s0 with sideA = { s0.sideA with bf = abf }; sideB = { s0.sideB with bf = bbf } })
+        (perms s0.sideB.bf))
+    (perms s0.sideA.bf)
+
+let certify_win dir starter =
+  let w = open_win dir in
+  let t = w.wt in
+  let t0 = Unix.gettimeofday () in
+  let below s r = match index t s with Some i -> below_rec w i r | None -> None in
+  let full s r = match index t s with Some i -> record w i r | None -> None in
+  (* the opening's lowest-rank record on at most 20 life *)
+  let s0 = init starter in
+  let k0 = key t.h t.tt s0 in
+  let i0 = match index t k0 with Some i -> i | None -> failwith "certify-win: the opening has no position" in
+  let a, b = recs w i0 in
+  let r0 =
+    let rec go p = if p >= b then failwith "certify-win: no opening record on 20 life"
+      else if rval w p <= s0.sideB.life then rank w i0 p else go (p + 1) in
+    go a
+  in
+  (* pass 1: collect the records the check uses *)
+  let used = Hashtbl.create 100_000 in
+  let queue = Queue.create () in
+  let add i r = if not (Hashtbl.mem used (i, r)) then (Hashtbl.replace used (i, r) (); Queue.push (i, r) queue) in
+  add i0 r0;
+  let logging s r =
+    match full s r with
+    | Some v -> (match index t s with Some i -> add i r | None -> ()); Some v
+    | None -> None
+  in
+  let check lk (i, r) =
+    let memo, ok = win_oracle w full below in
+    let hint s m = let s' = step s m in (not (too_many t.ott s')) && ok r false s' in
+    let res =
+      List.for_all (fun s ->
+          match lk s r with
+          | Some v -> check_win t.h t.ott t.tt lk below hint r fuel true (entry s v)
+          | None -> false)
+        (record_states w i)
+    in
+    H.reset memo;
+    res
+  in
+  let bad1 = ref 0 in
+  while not (Queue.is_empty queue) do
+    if not (check logging (Queue.pop queue)) then incr bad1
+  done;
+  let d = Hashtbl.length used in
+  Printf.printf "pass 1: %d records collected, %d failed (%.1fs)\n%!" d !bad1 (Unix.gettimeofday () -. t0);
+  (* pass 2: the same check with lookup restricted to the collected set *)
+  let restricted s r =
+    match index t s with
+    | Some i when Hashtbl.mem used (i, r) -> record w i r
+    | _ -> None
+  in
+  let bad = Hashtbl.fold (fun ir () acc -> if check restricted ir then acc else acc + 1) used 0 in
+  let states = Hashtbl.fold (fun (i, _) () acc -> acc + List.length (record_states w i)) used 0 in
+  Printf.printf "pass 2: %d records (%d states) checked, %d failed (%.1fs)\n" d states bad (Unix.gettimeofday () -. t0);
+  match restricted k0 r0 with
+  | Some v ->
+    Printf.printf "opening record: rank %d, B needs %d life (has %d)\n" r0 v s0.sideB.life;
+    if bad = 0 && v <= 20 then print_endline "certified: B wins from the opening"
+    else print_endline "not certified"
+  | None -> print_endline "not certified: the opening record is missing"

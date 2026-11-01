@@ -294,6 +294,52 @@ impl Deps {
 
 /// Iterate to the fixed point from `start`, one A-life level at a time,
 /// lowest first (Fix.solve without ranks or warm starts).
+/// Sort the rank log by position: `hidx` holds n + 1 offsets (u64) into
+/// `hrec`, whose records are (round u32, value i32) in increasing round
+/// order. A position's last record is its final value.
+fn index_hist(sv: &Solver, nrec: u64, start: i64) {
+    let raw = unsafe { Mmap::map(&File::open(sv.dir.join("hist-raw")).unwrap()).unwrap() };
+    let rec = |k: usize| {
+        let b = &raw[16 * k..16 * k + 16];
+        (u64::from_le_bytes(b[0..8].try_into().unwrap()) as usize, &b[8..16])
+    };
+    let mut off = vec![0u64; sv.n + 1];
+    for k in 0..nrec as usize {
+        off[rec(k).0 + 1] += 1;
+    }
+    for i in 0..sv.n {
+        off[i + 1] += off[i];
+    }
+    let f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(sv.dir.join("hrec")).unwrap();
+    f.set_len(8 * nrec).unwrap();
+    let mut out = unsafe { MmapMut::map_mut(&f).unwrap() };
+    let mut pos = off.clone();
+    for k in 0..nrec as usize {
+        let (i, b) = rec(k);
+        let p = pos[i] as usize;
+        out[8 * p..8 * p + 8].copy_from_slice(b);
+        pos[i] += 1;
+    }
+    out.flush().unwrap();
+    // the last record of each position is its final value
+    for i in 0..sv.n {
+        let v = if off[i + 1] > off[i] {
+            let p = off[i + 1] as usize - 1;
+            fix::of32(i32::from_le_bytes(out[8 * p + 4..8 * p + 8].try_into().unwrap()))
+        } else {
+            start
+        };
+        assert_eq!(v, sv.get(i), "rank log disagrees with the value of position {i}");
+    }
+    let mut w = BufWriter::new(File::create(sv.dir.join("hidx")).unwrap());
+    for o in &off {
+        w.write_all(&o.to_le_bytes()).unwrap();
+    }
+    drop(raw);
+    let _ = fs::remove_file(sv.dir.join("hist-raw"));
+    println!("  ranks: {nrec} records");
+}
+
 pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
     let t0 = Instant::now();
     let n = sv.n;
@@ -312,6 +358,12 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
     let deps = Deps::build(sv, &progs, w);
     let dirty: Vec<AtomicBool> = (0..nb).map(|_| AtomicBool::new(false)).collect();
     let mut evals = 0u64;
+    // With ranks (TCB_RANKS=1), each level is solved in rounds: a round
+    // reads only the previous round's values, and every change is logged as
+    // (position, round, value) for win certificates (WinCert.v).
+    let ranks = std::env::var("TCB_RANKS").ok().as_deref() == Some("1");
+    let mut hist = ranks.then(|| BufWriter::new(File::create(sv.dir.join("hist-raw")).unwrap()));
+    let mut nhist = 0u64;
     for slot in 0..sv.nl {
         let l = sv.life_of_slot(slot) as i64;
         let first = slot * nb;
@@ -354,7 +406,7 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
         loop {
             sweeps += 1;
             let forward = sweeps & 1 == 1;
-            let r: Vec<u64> = std::thread::scope(|sc| {
+            let r: Vec<(u64, Vec<(usize, i64)>)> = std::thread::scope(|sc| {
                 let hs: Vec<_> = (0..w)
                     .map(|k| {
                         let (value, fin, progs, keep, dirty, deps, wget, wset) = (&value, &fin, &progs, &keep, &dirty, &deps, &wget, &wset);
@@ -362,6 +414,7 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
                             let (lo, hi) = chunk(nb, w, k);
                             let (mut nv, mut tv) = (Vec::new(), Vec::new());
                             let mut ev = 0u64;
+                            let mut upd: Vec<(usize, i64)> = Vec::new();
                             for x in lo..hi {
                                 let j = if forward { x } else { lo + hi - 1 - x };
                                 if !dirty[j].swap(false, Relaxed) || fin(j) {
@@ -372,19 +425,37 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
                                 let old = wget(first + j);
                                 let v = keep(old, v);
                                 if v != old {
+                                    if ranks {
+                                        upd.push((j, v));
+                                        continue;
+                                    }
                                     wset(first + j, v);
                                     for &d in deps.of(j) {
                                         dirty[d as usize].store(true, Relaxed);
                                     }
                                 }
                             }
-                            ev
+                            (ev, upd)
                         })
                     })
                     .collect();
                 hs.into_iter().map(|h| h.join().unwrap()).collect()
             });
-            let ev: u64 = r.iter().sum();
+            let mut ev = 0u64;
+            for (e, upd) in r {
+                ev += e;
+                for (j, v) in upd {
+                    wset(first + j, v);
+                    for &d in deps.of(j) {
+                        dirty[d as usize].store(true, Relaxed);
+                    }
+                    let h = hist.as_mut().unwrap();
+                    h.write_all(&((first + progs.perm[j] as usize) as u64).to_le_bytes()).unwrap();
+                    h.write_all(&(sweeps as u32).to_le_bytes()).unwrap();
+                    h.write_all(&fix::to32(v).to_le_bytes()).unwrap();
+                    nhist += 1;
+                }
+            }
             evals += ev;
             if ev == 0 {
                 break;
@@ -402,6 +473,10 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
         }
     }
     drop(work);
+    if let Some(h) = hist.take() {
+        drop(h);
+        index_hist(sv, nhist, start);
+    }
     let files = progs.maps.len();
     drop(progs);
     for k in 0..files {
