@@ -1,33 +1,25 @@
 (** * The claims of [spec/Claims.v], proved
 
-    Each claim rests on a certificate: a table the solver computed, every
-    entry of which the checker of [Checker.v] (safety) or [WinCert.v] (wins)
-    accepts. The checkers are proved sound for any table at all, so the
-    tables themselves need no trust. What the theorems below take as a
-    hypothesis is only that the check passed: the solver driver runs the
-    extracted checkers over every entry ([solver/certify.ml]). *)
+    Each claim rests on a certificate: a table of positions computed by the
+    solver, in [proofs/bfirst] and [proofs/afirst]. Rocq runs the checker of
+    [WinCert.v] (wins) or [Checker.v] (safety) on every entry, in [vm_compute]
+    ([Chunk*.v]). The checkers are proved sound for any table at all
+    ([Packed.v] ties them to the packed tables), so the tables need no trust. *)
 
 From TCB.Spec Require Import Model Game Claims.
-From TCB.Proofs Require Import GameFacts Checker Saturation WinCert.
+From TCB.Proofs Require Import GameFacts.
+From TCB.BFirst Require BFirst.
+From TCB.AFirst Require AFirst.
 
-(** B wins going first: [certify-win DIR B] on the ranked B-win table. *)
-Theorem b_first_b_wins_proved : forall H ott tt lookup below hint fuel r v,
-  (forall s r v, lookup s r = Some v ->
-     check_win H ott tt lookup below hint r fuel true (entry s v) = true) ->
-  lookup (key H tt (init PB)) r = Some v -> v <= 20 ->
-  b_first_b_wins.
-Proof. intros. eapply certified_win_opening; eassumption. Qed.
+Theorem b_first_b_wins_holds : b_first_b_wins.
+Proof. exact BFirst.b_first_b_wins_proved. Qed.
 
-(** B doesn't lose going second: [certify DIR A] on the B-safe table. *)
-Theorem a_first_b_safe_proved : forall H ott tt lookup hint fuel v,
-  (forall s v, lookup s = Some v ->
-     check_node H ott tt lookup hint fuel true (entry s v) = true) ->
-  lookup (key H tt (init PA)) = Some v -> v <= 20 ->
-  a_first_b_safe.
-Proof. intros. eapply certified_opening; eassumption. Qed.
+Theorem a_first_b_safe_holds : a_first_b_safe.
+Proof. exact AFirst.a_first_b_safe_proved. Qed.
 
-Theorem a_first_a_cannot_win_proved : a_first_b_safe -> a_first_a_cannot_win.
-Proof. intros Hs Hw. exact (wins_not_safe PA _ Hw Hs). Qed.
+Theorem a_first_a_cannot_win_holds : a_first_a_cannot_win.
+Proof. intro Hw. exact (wins_not_safe PA _ Hw a_first_b_safe_holds). Qed.
 
-Print Assumptions b_first_b_wins_proved.
-Print Assumptions a_first_b_safe_proved.
+Print Assumptions b_first_b_wins_holds.
+Print Assumptions a_first_b_safe_holds.
+Print Assumptions a_first_a_cannot_win_holds.

@@ -2,7 +2,7 @@
 
     Read [Model.v] (the game: states, legal moves, and how moves change the
     state) and [Game.v] (what winning and not losing mean) first. This file
-    states the results; [proofs/Results.v] proves each of them. *)
+    states the results; [proofs/results/Results.v] proves each of them. *)
 
 From TCB.Spec Require Import Model Game.
 

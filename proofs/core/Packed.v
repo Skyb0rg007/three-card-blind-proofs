@@ -213,9 +213,9 @@ Fixpoint range_ok (f : nat) (j hi : int) : bool :=
   else true.
 
 (** Ranges between consecutive boundaries check; each is proved on its own. *)
-Fixpoint chain (f : nat) (bs : list int) : Prop :=
+Fixpoint chain (bs : list int) : Prop :=
   match bs with
-  | b :: ((b' :: _) as rest) => range_ok f b b' = true /\ chain f rest
+  | b :: ((b' :: _) as rest) => (exists f, range_ok f b b' = true) /\ chain rest
   | _ => True
   end.
 
@@ -234,13 +234,13 @@ Proof.
   - apply not_true_iff_false in Hlt. exfalso. apply Hlt, ltb_spec. lia.
 Qed.
 
-Lemma chain_spec : forall f bs, chain f bs ->
+Lemma chain_spec : forall bs, chain bs ->
   forall k, (to_Z (hd 0%uint63 bs) <= to_Z k < to_Z (last bs 0%uint63))%Z -> ok k = true.
 Proof.
-  intros f bs. induction bs as [| b [| b' bs] IH]; intros Hc k Hk.
+  intro bs. induction bs as [| b [| b' bs] IH]; intros Hc k Hk.
   - cbn [hd last] in Hk. lia.
   - cbn [hd last] in Hk. lia.
-  - destruct Hc as [Hr Hc]. change (hd 0%uint63 (b :: b' :: bs)) with b in Hk.
+  - destruct Hc as [[f Hr] Hc]. change (hd 0%uint63 (b :: b' :: bs)) with b in Hk.
     change (last (b :: b' :: bs) 0%uint63) with (last (b' :: bs) 0%uint63) in Hk.
     destruct (Z.lt_ge_cases (to_Z k) (to_Z b')).
     + exact (range_ok_spec f b b' Hr k ltac:(lia)).
@@ -248,10 +248,10 @@ Proof.
 Qed.
 
 (** A chain from 0 to [n] covers every index below [n]. *)
-Lemma chain_all : forall f bs n, chain f bs -> hd 0%uint63 bs = 0%uint63 -> last bs 0%uint63 = n ->
+Lemma chain_all : forall bs n, chain bs -> hd 0%uint63 bs = 0%uint63 -> last bs 0%uint63 = n ->
   forall j, ltb j n = true -> ok j = true.
 Proof.
-  intros f bs n Hc H0 Hl j Hj. apply (chain_spec f bs Hc j).
+  intros bs n Hc H0 Hl j Hj. apply (chain_spec bs Hc j).
   rewrite H0, Hl, to_Z_0. apply ltb_spec in Hj. pose proof (to_Z_bounded j). lia.
 Qed.
 
@@ -355,14 +355,14 @@ Qed.
 
 (** B wins from the opening if every record checks and the opening has a
     record on at most 20 life. *)
-Theorem table_wins : forall bs r v, chain record_ok fuel bs -> hd 0%uint63 bs = 0%uint63 ->
+Theorem table_wins : forall bs r v, chain record_ok bs -> hd 0%uint63 bs = 0%uint63 ->
   last bs 0%uint63 = PArray.length K1 -> lookup (key H tt (init PB)) r = Some v -> v <= 20 ->
   wins PB (init PB).
 Proof.
   intros bs r v Hc H0 Hl Hr Hv.
   refine (certified_win_opening H ott tt lookup below hint fuel PB r v _ Hr Hv).
   intros s r' v' Hlk. destruct (lookup_spec s r' v' Hlk) as (j & Hj & -> & -> & ->).
-  exact (chain_all record_ok fuel bs _ Hc H0 Hl j Hj).
+  exact (chain_all record_ok bs _ Hc H0 Hl j Hj).
 Qed.
 
 End WinTable.
@@ -396,14 +396,14 @@ Qed.
 
 (** B does not lose from the opening of [p] if every entry checks and the
     opening's entry asks for at most 20 life. *)
-Theorem table_safe : forall p bs v, chain entry_ok fuel bs -> hd 0%uint63 bs = 0%uint63 ->
+Theorem table_safe : forall p bs v, chain entry_ok bs -> hd 0%uint63 bs = 0%uint63 ->
   last bs 0%uint63 = PArray.length K1 -> slookup (key H tt (init p)) = Some v -> v <= 20 ->
   safe PB (init p).
 Proof.
   intros p bs v Hc H0 Hl Hr Hv.
   refine (certified_opening H ott tt slookup hint fuel p v _ Hr Hv).
   intros s v' Hlk. destruct (slookup_spec s v' Hlk) as (j & Hj & -> & ->).
-  exact (chain_all entry_ok fuel bs _ Hc H0 Hl j Hj).
+  exact (chain_all entry_ok bs _ Hc H0 Hl j Hj).
 Qed.
 
 End SafeTable.

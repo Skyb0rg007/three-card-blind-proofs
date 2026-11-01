@@ -27,7 +27,7 @@ including the one after the non-active player acts in the active player's
 upkeep (the actor keeps priority). The packed key records only the active
 player, so that position is read as the one where the active player has
 priority. The two are not the same position. The certificate checker
-(`proofs/Checker.v`) therefore counts a turn start only when the active
+(`proofs/core/Checker.v`) therefore counts a turn start only when the active
 player has priority, and searches through the other case. The B-safe table
 for the A-first opening passes that stricter check (see Results).
 
@@ -52,7 +52,7 @@ Thresholds compose exactly through a turn:
 This removes the one dimension that is unbounded in *every* line of play: B
 can gain 5 life every two rounds forever.
 
-Monotonicity is proven in `proofs/Mono.v`, for either player: `wins_bump`
+Monotonicity is proven in `proofs/core/Mono.v`, for either player: `wins_bump`
 (a win stays a win with more life), `safe_bump` (likewise for safety) and
 `wins_opp_bump` (an opponent's win against more life is a win against
 less). All three rest on `step_bump`: adding life to a player commutes with
@@ -74,7 +74,7 @@ restricted move set is a safe strategy. Two restrictions are used.
   opposing option depends on the existence of an unused untapped or tapped
   Thopter: attacks are unrestricted, and blocks and damage-assignment orders
   only involve creatures the owner chose to block with. Proven in
-  `proofs/Mono.v` as `wins_thop` and `safe_thop`: if `t` matches `s`
+  `proofs/core/Mono.v` as `wins_thop` and `safe_thop`: if `t` matches `s`
   except that `p` has at least as many untapped and at least as many tapped
   Thopters, then a win or safety for `p` from `s` holds from `t` too. Every
   step preserves the relation (`step_thop`), the opponent's moves are the
@@ -113,7 +113,7 @@ instead.
 pessimistic, since A's life is monotone good for A like B's is for B. It
 removes A's life from the position (a factor of 20), and it is valid
 whenever B's defence does not rely on threatening to kill A. The
-monotonicity used here is `safe_bump` with `p = PA` (`proofs/Mono.v`).
+monotonicity used here is `safe_bump` with `p = PA` (`proofs/core/Mono.v`).
 
 ## R5b. Solving by A-life level (exact)
 

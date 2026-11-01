@@ -1,0 +1,4 @@
+; The claims of spec/Claims.v, proved with no hypotheses.
+(rocq.theory
+ (name TCB.Results)
+ (theories Stdlib TCB.Spec TCB.Proofs TCB.BFirst TCB.AFirst))

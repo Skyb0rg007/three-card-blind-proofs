@@ -39,7 +39,7 @@ This repo contains a [Rocq][] mechanization of the problem and a proof of the so
 | Opening | Result |
 |---|---|
 | B plays first | B can force a win |
-| A plays first | A can't force a win (whether B can is still open) |
+| A plays first | A can't force a win (B never loses; whether B can force a win is still open) |
 
 ## Auditing the result
 
@@ -55,37 +55,56 @@ The repository is split so that you only have to read one directory.
   - `Game.v`: what it means for a player to win (force the opponent to lose in
     finitely many moves) or to be safe (never lose).
   - `Claims.v`: the claims, stated with the definitions above.
-- **`proofs/`: let Rocq check this.** `Results.v` proves each claim of
-  `spec/Claims.v`. Everything else in `proofs/` supports it.
+- **`proofs/`: let Rocq check this.** `results/Results.v` proves each claim
+  of `spec/Claims.v` with no hypotheses. Everything else in `proofs/`
+  supports it:
+  - `core/Checker.v` and `core/WinCert.v` define checkers for safety and for
+    wins, and prove them sound for any table of positions at all.
+  - `core/Packed.v` stores such a table compactly in primitive arrays, and proves
+    that if every entry passes the checker, the claim holds.
+  - `bfirst/` and `afirst/` hold the two tables (`Data.v.xz`, computed by the
+    solver). Each `Chunk*.v` runs the checker on a slice of the table with
+    `vm_compute`.
 
 Build everything with:
 
 ```sh
-nix-shell --run 'dune build'
+nix-shell --run 'dune build -j 4'
 ```
 
-The build prints `Closed under the global context` for each theorem in
-`proofs/Results.v`. That means the proofs use no axioms.
+This takes about two CPU-hours: Rocq runs the checker on 1.5M positions for
+the B-first claim and 1.6M for the A-first one. Each job needs about 1 GB of
+memory, so choose `-j` to fit your machine.
 
-### What Rocq does not check
+For each theorem in `proofs/results/Results.v`, the build prints the
+assumptions it rests on. The only ones are Rocq's primitive 63-bit integers
+and arrays (`int`, `add`, `ltb`, `array`, `get`, …) and the standard library
+axioms that specify them (`add_spec`, `ltb_spec`, `eqb_correct`, …). There
+are no other axioms. To see the
+theorems yourself, run `nix-shell --run 'dune rocq top proofs/results/Results.v'`
+and then:
 
-Each theorem in `proofs/Results.v` takes one hypothesis: every entry of a table
-computed by the solver passes a checker. The checkers are defined and proved
-sound in `proofs/` for any table at all, so the solver and its tables need no
-trust. But the check itself runs outside Rocq: the tables are too large to
-check inside it (90.8M entries for the A-first result, 1.1M for the B-first
-one). The checkers are extracted to OCaml, and `solver/certify.ml` runs them
-over every entry. Believing the results therefore also means trusting:
+```coq
+From TCB.Results Require Import Results.
+Check b_first_b_wins_holds.  (* : b_first_b_wins *)
+```
 
-- Rocq's extraction to OCaml, and the OCaml compiler;
-- `solver/certify.ml`, which reads the tables, defines the lookup function the
-  hypothesis is about, and runs the check on every entry it answers for.
+### What you have to trust
 
-To reproduce the checks (the tables are not committed; each takes up to about
-30 minutes and 7 GB of memory):
+Only Rocq itself: its kernel, including the bytecode virtual machine behind
+`vm_compute`, and its primitive integers and arrays, which the kernel computes
+with machine operations. The tables need no
+trust: the checks run inside Rocq, and a wrong entry would make a chunk fail to
+compile. The solver that computed them (`rsolver/`, `solver/`) is not part of
+the proof.
+
+### Reproducing the tables
+
+The tables come from the solver (each step takes up to about 30 minutes and
+7 GB of memory):
 
 ```sh
-nix-shell --run 'dune build'
+nix-shell --run 'dune build solver'
 (cd rsolver && nix-shell ../shell.nix --run 'cargo build --release')
 R=rsolver/target/release/rsolver
 C=_build/default/solver/main.exe
@@ -93,12 +112,16 @@ COMMON='TCB_MACRO=1 TCB_FULLOPP=1 TCB_BMACRO=blk,atk2,dmg'
 
 # A plays first: B is safe, so A can't force a win
 env $COMMON TCB_OT=10 TCB_OTT=20 TCB_SAVE=tables/bsafe-afirst-10-full $R fix safe B 10 10 100 A
-$C certify tables/bsafe-afirst-10-full A
+$C certify-safe-export tables/bsafe-afirst-10-full A proofs/afirst 48 200
 
 # B plays first: B wins
 env $COMMON TCB_RANKS=1 TCB_OT=14 TCB_OTT=14 TCB_SAVE=tables/bwin-bfirst-14-full $R fix win B 4 14 100 B
-$C certify-win tables/bwin-bfirst-14-full B
+$C certify-win-export tables/bwin-bfirst-14-full B proofs/bfirst 48 200
 ```
+
+The export keeps only the positions the check of the opening reaches, runs
+the same check as Rocq (the checkers extracted to OCaml) and writes the
+Rocq files.
 
 `REDUCTION.md` explains how the search space was reduced to make these
 tables small enough to compute.
