@@ -517,6 +517,7 @@ at most `tt`. All runs are A first, from the opening.
 | macro | 16 | 8 | ≤ 6 | ≤ 8 | B life ≤ 15 |
 | macro | 24 | 8 | ≤ 6 | ≤ 8 | B life ≤ 16 |
 | macro | 32 | 8 | ≤ 6 | ≤ 8 | B life ≤ 16 |
+| macro | 64 | 8 | ≤ 6 | ≤ 8 | B life ≤ 16 (228M positions) |
 | every legal move | 10 | 8 | ≤ 6 | ≤ 8 | B life ≤ 15 |
 | macro | 10 | 4 | ≤ 6 | ≤ 4 | B life ≤ 19 |
 | macro | 10 | 16 | ≤ 6 | ≤ 16 | B life ≤ 15 |
@@ -525,7 +526,7 @@ at most `tt`. All runs are A first, from the opening.
 
 So a B held to a 6/6 Walker and at most 8 Thopters beats A from B life
 16–17, whatever A's caps. Bigger A Walkers barely help (15 at `t` 10, 16 at
-24 and 32). What decides it is B's Thopter count: held to 4, B can't win
+24, 32 and 64). What decides it is B's Thopter count: held to 4, B can't win
 from 20.
 
 The mirrored B-win (B Walker 6, B Thopters 8, A Walkers saturating silently
@@ -536,3 +537,35 @@ grows, then trades its Walker into Thopters and races in the air.
 This cuts against the draw hypothesis. The strict B-win probes above (B needs
 24–25) count an A Walker past `ot` as a loss for B. That rule, not A's play,
 may be what holds B back.
+
+The B-win side, same B (Walker 6, Thopters 8, B's moves filtered), A first:
+
+| A's moves | `ot` | `ott` | rules | B wins with |
+|---|---|---|---|---|
+| filtered | 24 | 24 | relaxed (`dmg,die,many`) | B life ≥ 18 |
+| filtered | 24 | 24 | huge rules relaxed (`dmg,die`) | B life ≥ 18 |
+| filtered | 24 | 24 | strict | B life ≥ 24 |
+| every legal move | 24 | 24 | strict (sound) | B life ≥ 24 (218M positions, 22 min, 12 GB) |
+| filtered | 24 | 12 | strict | B life ≥ 24 |
+| filtered | 32 | 12 | strict | B life ≥ 24 |
+
+The whole gap between 18 and 24 is the huge-Walker rule: in the strict check,
+an A Walker past `ot` that attacks unblocked or fights a big block is a loss
+for B. Raising `ot` from 24 to 32 doesn't move B's 24. So, for every cap, a
+capped A loses from B life 16–18, but an A that may grow past the cap escapes.
+Each side's strategy leans on how unbounded growth plays out (A's Walkers
+against B's Elixir life), and no fixed cap settles A first in either direction.
+
+The two results fit together in one of two ways, and these runs can't tell
+which:
+
+- **B wins.** B's life outgrows A's threats (Elixir banks 2.5 life a round;
+  an A Walker grows 1 a round, and only while it doesn't attack), and the
+  strict rule is too pessimistic: it makes B chump every huge attacker, even
+  when B's life could take the hit.
+- **A is safe by growing forever.** B's capped wins wait until A's Walkers hit
+  their cap and stop growing. That would also make A's value flat in `t`, and
+  it is the growth equilibrium described below.
+
+What would tell them apart is how long B's capped wins take: a win that ends
+before A could reach its cap doesn't depend on the cap.
