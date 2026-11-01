@@ -395,6 +395,7 @@ The spot check passes in every run.
 | same | **win certificate** (`TCB_RANKS=1`: rounds within each A-life level, every value change logged; `main.exe certify-win`, extracted `WinCert.check_win`) | same | **certified**: the 1.10M records B's strategy uses from the opening (1.51M states with Walker orders) all pass, 0 failures (pass 1 collects them, pass 2 re-checks with the lookup restricted to them; 12 min). The opening record has rank 19000017 (A on 20 life, round 17) and B on 17 life. With `WinCert.certified_win_opening` (closed under the global context) this makes `wins PB (init PB)` a Rocq theorem, trusting the extraction and the driver. |
 | opening, A first | B-wins, B macro `blk,atk2,dmg`, A filtered | **B Walker 6**, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (77.2M positions, 6.6 min): the same as with B's Walker capped at 4. |
 | same | same | **B Walker 10**, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (112M positions, 11 min). A bigger B Walker doesn't help B going second; with A filtered this is optimistic for B, so with every legal A move B needs at least as much. |
+| opening, A first | B-wins, **every legal B move** (`TCB_FULLMINE=1`), A filtered | B Walker 4, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (112M positions, 48 min): B's macro wasn't costing B anything. A is still filtered, which is optimistic for B, so B can't force a win from 20 within these caps. |
 
 ¹ A active; A: life 10, one 3/3 Walker, 2 Thopters. B: life 6, one 1/1
 Walker, 2 Thopters, Elixir in hand.
