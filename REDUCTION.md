@@ -987,3 +987,137 @@ only if it is smaller in B's order, which isn't a lattice join, so which
 sound fixed point it reaches depends on thread timing. Each table is still
 sound by the induction-on-time argument above. Scalar tables, and the walk,
 are byte-identical with the new binary.
+
+## What holds the adapt A-safe at 19: A's Thopter-attack macro
+
+With B's standard rules (no B caps imposed), the adapt A-safe gives 19, not
+the 23–24 of the runs above. That held with B's R4 rules relaxed, with A's
+Thopter cap at 8 or 14, and on a smaller configuration: A first,
+`TCB_BIG=1 TCB_LAX=adapt TCB_MACRO=1 TCB_OT=10 TCB_OTT=8 fix safe A 20 8 100 A`
+(K = 21; 60.0M positions = 3.0M bases × 20). The trace below is on that
+configuration, at B life 20.
+
+**Ranks for BIG tables.** `fix safe A` with `TCB_BIG=1` and `TCB_RANKS=1`
+now solves in synchronous rounds and logs every line change. In `adapt` the
+operator is monotone componentwise (`lmaxc`, `lmin`, `ltrans`, `norm_big`),
+so the rounds reach the same fixed point as the worklist: the ranked table is
+byte-identical (142M records, 3.5 min). `trace` follows B's win at the BIG
+Walker's exact n: a turn start is lost at (L, n) when c + βn < L, its round
+is the first logged line with c + βn < L, and each turn is searched per n, so
+a win that only the line arithmetic gives shows up as "not confirmed".
+`TCB_ROOT=HEX` starts a solve or trace from any turn start (`TCB_TRACE_KEYS=1`
+prints the keys).
+
+**The trace.**
+- **A's best replies** (`TCB_TRACE_PV=1`): 33 turn starts, 21 turns deep,
+  and two leaves, both real A deaths. No cap, R4 rule, clamp or line
+  arithmetic is involved. It is a race. Both players cast both Walkers and B
+  its Elixir. B's Walker grows to 3 and attacks every turn, while A swings
+  with both of its Walkers (3 and 5), so neither side blocks much. B
+  Elixirs every other turn (20 → 25, 22 → 24, 9 → 13 …). With A on 3 and
+  B on 5, A's two Walkers attack, B blocks the 5 with its 3 and drops to
+  1, and its Walker's 3 Thopters fly in for the last 3. B survives the
+  race on exactly 1 life, which is why A is safe at 19.
+- **Every A move**: complete, 3.08M turn starts, up to 259 turns deep,
+  67 s, 2.2 GB.
+
+  | leaf | leaf edges | turns with one |
+  |---|---|---|
+  | A dead (real) | 886,417 | 593,499 |
+  | too_many (B Thopters > 8) | 512,750 | 185,102 |
+  | huge: unblocked | 5,445 | 5,379 |
+  | huge: huge attacker, blockers total `ot` + 1 | 43,576 | 10,916 |
+  | huge: huge blocker | 43,702 | 31,563 |
+  | lmax clamp | 1,828 | 1,828 |
+  | not confirmed per n (all BIG) | | 10,663 |
+
+  A's Walker cap removed a pump at **0** A nodes of the witness, so A's
+  second Walker (capped at `t` while the first is BIG) never binds, and A's
+  Thopters were cut to 8 on only 1,436 edges. The R4 leaves can be
+  replaced: relaxing them leaves 19 (below). The unconfirmed turn starts
+  (0.3%) are where `lmin` at B's nodes, or a clamp, gives B a win that the
+  per-n search doesn't.
+
+**Where the two tables part.** Against the strict B-win table with every
+legal A move (B Walker 6, B Thopters 8, A huge > 24, `ott` 24; 24 at the
+opening), the best-reply trace disagrees at 29 of its 33 turn starts. The
+frontier is near the end of the race: B to play, A on 3 with Walkers 3 and
+5 (tapped), B on 5 with a 3/3 and Elixir in its library. The A-safe table
+says B wins there from 5, and the B-win table says B needs 9. Traced from
+that position (`TCB_ROOT`) at B life 5:
+- **A-safe** (every A move): complete, 35.6k turn starts, and every leaf is
+  a real A death (21,154). Every turn start lies inside the B-win's caps.
+  So B beats A's macro there honestly. Against the B-win table, 253 turn
+  starts are a frontier, and 144 of them are explained by an escape move the
+  A-safe A can't make: **attacking with some of its Thopters** (the other
+  109 differ only in turns further on). In the first
+  example, A's 3 trades with B's 3 (both get 3 Thopters), and later A is on
+  1 with a 5/5 and 3 Thopters against B on 3 with a 2/2, one Thopter and
+  Elixir. If A attacks with everything, B blocks a Thopter, Elixirs to
+  survive, and its 2/2 kills A on the swing back, since every A creature is
+  tapped. A's escape is to attack with the 5/5 and one Thopter (B blocks
+  it, Elixirs and drops to 3) and keep two Thopters home to block the 2/2.
+- **B-win** (every B move): A escapes over 1.42M turn starts. Its leaves are
+  B dead (296k), A's Walker past 24 unblocked (50.5k) and lmax (11.3k), and
+  B's Walker cap removed a pump at 54.8k B nodes.
+
+**Targeted solves** (small configuration, A first, `lmax` 100):
+
+| A-safe variant | A safe with | positions | time, peak RSS |
+|---|---|---|---|
+| `adapt`, A macro (`atk,pump,order,dmg`) | B life ≤ 19 | 60.0M | 2.6 min, 1.4 GB |
+| same, B's R4 rules relaxed (`adapt,dmg,die,many`) | ≤ 19 | 60.6M | 3.5 min |
+| same, `lmax` 200 | ≤ 19 | | 2.4 min |
+| same, without A's pump rule (`atk,order,dmg`) | ≤ 19 | | 2.5 min |
+| same, every legal A move | stopped: 9.0M bases, over 3.3 GB | 179M | |
+| `adapt`, `TCB_AMACRO=atk1,pump,order,dmg` | **≤ 23** | 63.1M | 3.6 min, 1.6 GB |
+| `adapt`, `atk2,pump,order,dmg` | **≤ 23** | 65.8M | 7.3 min, 1.8 GB |
+| `adapt`, `pump,order,dmg` (any Thopter count) | **≤ 23** | 72.5M | 5.7 min, 2.6 GB |
+| `adapt`, `atk2,…`, standard configuration (`t` 23, `ot` 14) | **≤ 23** | 103M | 6.8 min, 2.9 GB |
+| **sound** (single line, `TCB_BIGREF` 20), `atk1,…` | ≤ 18 | 63.1M | 4.8 min, 1.6 GB |
+| **sound**, `atk2,…` | **≤ 20** | 65.8M | 4.5 min, 1.8 GB |
+| sound, `atk2,…`, B 6/6 (`ot` 6, `ott` 6) | **≤ 20** | 31.1M | 1.8 min, 0.7 GB |
+| sound, `atk2,…`, B 6/6, **every legal B move** (`TCB_FULLOPP=1`) | **≤ 20** (also with `TCB_BIGCHECK=1`) | 44.9M | 3.9 min, 1.2 GB |
+
+**The binding rule is A's macro `atk`:** A attacks with all of its Thopters
+or none. Relaxing it to `atk1` (A may keep one Thopter home), `atk2`, or
+dropping it moves the adapt start on the small configuration from 19 to 23,
+and `atk2` does the same on the standard one. 23 is exactly
+complementary to the B-win BIG's 24 at B 6/6: B wins from 24 and A is safe up
+to 23. The earlier adapt runs (24 and 23 at B 4/4 to 8/8) come from the
+`TCB_AMACRO=pump,order,dmg` line of the table above, so they most likely had
+`atk` dropped too. That would be why they matched the B win and the standard
+runs didn't. None of the other candidates moves the 19: A's
+second-Walker cap is never used, and relaxing B's R4 rules, `lmax` 200 or
+dropping A's pump rule each leave it. So B's Walker growing to 9–15 was a
+red herring. With A allowed to hold Thopters back, B's Walker up to 10 (14
+on the standard configuration) gives the same 23 as a B capped at 6.
+
+**It is an abstraction artefact, not a strength of B's.** `atk` restricts A,
+which is sound for A-safe but pessimistic. B's honest wins in the trace are
+races that end with A trading Walkers into Thopters. A then needs to keep
+some Thopters home to block while the rest attack, and the macro forbids
+that. The B-win check, with every legal A move, finds exactly that escape.
+
+**A sound A-safe at 20.** With `atk2` in place of `atk` (`atk1` gives 18
+here: A's single-line choice needs the extra Thopter), the sound check
+(single line per A node at `TCB_BIGREF` 20, strict R4, A capped at 20 with
+one BIG Walker, A's Thopters cut at 8) already reaches B life 20, and so it
+does with B's Walker capped at 6 and every legal B move. That is the first
+A-safe value of 20 from the A-first opening that uses only sound rules. It
+still rests on the solver and on the BIG argument, which nothing checks yet
+beyond the spot check and `TCB_BIGCHECK`. B starts on 20, so B couldn't force
+a win, and with the certified B-safe (A can't force a win) the A-first game
+would be a draw. There is no margin: the value is exactly 20. What a proof
+still needs:
+- **A certificate checker for line values.** Rocq's `Checker.v` is scalar.
+  The BIG abstraction needs its own soundness argument in Rocq: a Walker
+  above every B total behaves the same for all n except in unblocked damage
+  to B, and lines are lower bounds. Then per-position lines need checking
+  (v ≤ F(v) componentwise), and the R4 saturation of B's Walker and Thopters
+  needs a proof for A as protagonist, the mirror of the one the B-safe
+  certificate uses.
+- **Every legal B move** stays on (`TCB_FULLOPP=1`), as in the last row, so
+  that R6 isn't needed.
+- **The table itself:** about 45M positions (2.25M bases), small enough to
+  export like the B-safe tables.
