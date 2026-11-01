@@ -112,6 +112,9 @@ fn big_cmd(c: &Cfg, starter: &str) {
         t0.elapsed().as_secs_f64()
     );
     solver::big_stats(c, &sv, &beta);
+    if std::env::var("TCB_NOSPOT").ok().as_deref() != Some("1") {
+        solver::spot_check_big(c, &sv, &beta);
+    }
     drop(sv);
     let _ = std::fs::remove_dir_all(&dir);
 }

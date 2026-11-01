@@ -619,23 +619,33 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
             t0.elapsed().as_secs_f64()
         );
     }
+    // unmap the programs before the table's values are written
+    drop((deps, dirty));
+    let Programs { maps, perm, .. } = progs;
+    let files = maps.len();
+    drop(maps);
+    for k in 0..files {
+        let _ = fs::remove_file(sv.dir.join(format!("prog-{k}")));
+    }
     let mut beta = vec![0i8; n];
     for slot in 0..sv.nl {
-        for (id, &b) in progs.perm.iter().enumerate() {
+        for (id, &b) in perm.iter().enumerate() {
             let v = wget(slot * nb + id);
             sv.set(slot * nb + b as usize, v.c);
             beta[slot * nb + b as usize] = v.b as i8;
         }
     }
-    drop(work);
-    let files = progs.maps.len();
-    drop(progs);
-    for k in 0..files {
-        let _ = fs::remove_file(sv.dir.join(format!("prog-{k}")));
-    }
-    // spot check against direct evaluation: v <= F(v) componentwise (the
-    // certificate condition), except possibly at positions equal to their
-    // value one level down; and how often v = F(v)
+    beta
+}
+
+/// The spot check of `solve_big`, against direct evaluation (every 500th
+/// position): v <= F(v) componentwise (the certificate condition), except
+/// possibly at positions equal to their value one level down; and how
+/// often v = F(v).
+pub fn spot_check_big(c: &Cfg, sv: &Solver, beta: &[i8]) {
+    let (n, nb) = (sv.n, sv.nb);
+    let w = jobs().min(nb.max(1));
+    let bounds = std::env::var("TCB_NOBOUND").ok().as_deref() != Some("1");
     let line = |i: usize| Line { c: sv.get(i), b: beta[i] as i64 };
     let (bad, badfin, eq, tot) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
     let next = AtomicUsize::new(0);
@@ -673,7 +683,6 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
     } else {
         println!("  spot check passed");
     }
-    beta
 }
 
 /// BIG-mode statistics: positions with a BIG Walker, the distribution of
@@ -682,8 +691,8 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
 pub fn big_stats(c: &Cfg, sv: &Solver, beta: &[i8]) {
     let nb = sv.nb;
     let k = c.big_k();
-    let st: Vec<State> = (0..nb).map(|b| fix::of_key(&fix::with_life(sv.base_key(b), 20))).collect();
-    let isbig: Vec<bool> = st.iter().map(|s| s.side_a.bf.iter().any(|w| w.counters == k)).collect();
+    let st = |b: usize| fix::of_key(&fix::with_life(sv.base_key(b), 20));
+    let isbig: Vec<bool> = (0..nb).map(|b| st(b).side_a.bf.iter().any(|w| w.counters == k)).collect();
     let nbig = isbig.iter().filter(|&&x| x).count();
     println!("BIG: K = {k}; {nbig} of {nb} bases have a BIG Walker");
     for (name, lo) in [("all levels", 0), ("A life 20", sv.nl - 1)] {
@@ -731,7 +740,7 @@ pub fn big_stats(c: &Cfg, sv: &Solver, beta: &[i8]) {
             continue;
         }
         let v = sv.get(slot * nb + b);
-        let s = &st[b];
+        let s = &st(b);
         let bw = match s.side_b.bf.first() {
             None => "none".to_string(),
             Some(w) if w.counters >= huge => "huge".to_string(),
