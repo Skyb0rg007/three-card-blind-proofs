@@ -860,13 +860,17 @@ Walker grows without bound, B needs 24 within these caps. That is the
 strongest evidence yet that B can't force a win from 20.
 
 The BIG table does win more positions than the strict one: at A life 20,
-3.23M of 3.85M bases are B wins against 3.02M. 836k positions need less or
-go from never to a finite need. Where it is worse (about 140k positions at
-A life 20), A's other Walker is mostly within 3 of K. That is the second-BIG
-rule, which is stricter than the strict rule's "a second huge Walker
-saturates". Keeping a second huge Walker under the strict rules (stored at
-K + 1) would fix those positions. It can't change the opening: dropping the
-second BIG, which only helps B, gives 24.
+3.23M of 3.85M bases are B wins against 3.02M. 886k positions need less or
+go from never to a finite need (836k non-BIG, 50k BIG). It is worse at 166k
+(141k non-BIG, 25k BIG).
+
+Among the BIG positions where BIG never wins but strict does, A's other
+Walker is mostly within 3 of K (172k of 179k over all levels). That is the
+second-BIG rule, which is stricter than the strict rule's "a second huge
+Walker saturates". Keeping a second huge Walker under the strict rules
+(stored at K + 1) would fix those positions. It can't change the opening:
+dropping the second BIG, which only helps B, gives 24. The worse non-BIG
+positions read such positions, or lose to the single-line choice.
 
 The rule fires on 187,831 edges in 6,369 compiled turns, 0.17% of the 3.85M
 bases. The count is the same at `ot` 20 and 24: the states near two big
