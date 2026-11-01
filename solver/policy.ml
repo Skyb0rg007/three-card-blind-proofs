@@ -40,7 +40,7 @@ let turtle ~elixir : policy = fun s ->
 
 (* Single-agent search: can [p] beat the fixed [pol] of the opponent within
    [d] turns? Returns the line if so. *)
-let beat p (pol : policy) =
+let beat ?(mine = Reduce.moves) p (pol : policy) =
   let tbl = Hashtbl.create 100_000 in
   let rec go s d =
     match winner s with
@@ -57,7 +57,7 @@ let beat p (pol : policy) =
                 match acc with
                 | Some _ -> acc
                 | None -> (let s' = step s m in Option.map (fun l -> (s, m) :: l) (go s' (Search.tick s s' d))))
-              None (Reduce.moves s)
+              None (mine s)
           in
           if r = None then Hashtbl.replace tbl k d;
           r

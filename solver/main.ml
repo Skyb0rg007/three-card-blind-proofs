@@ -97,6 +97,16 @@ let () =
      | Some line ->
        Printf.printf "B survives %s turns against %s %s (%.1fs)\n" d kind k (Sys.time () -. t0);
        print_line line)
+  | [| _; "abeat"; starter; kind; k; d |] ->
+    (* can B, with every legal move, beat a fixed A policy within d turns? *)
+    let t0 = Sys.time () in
+    let rec go n =
+      if n > int_of_string d then Printf.printf "B can't beat %s %s within %s turns (%.1fs)\n" kind k d (Sys.time () -. t0)
+      else match Policy.beat ~mine:moves PB (a_policy kind (int_of_string k)) (init (pl starter)) n with
+        | Some line -> Printf.printf "B beats %s %s within %d turns (%.1fs)\n" kind k n (Sys.time () -. t0); print_line line
+        | None -> Printf.printf "  (no B win within %d, %.1fs)\n%!" n (Sys.time () -. t0); go (n + 2)
+    in
+    go 10
   | [| _ |] | [| _; ("-h" | "--help") |] -> usage ()
   | _ -> ()
 
