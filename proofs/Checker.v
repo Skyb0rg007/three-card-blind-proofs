@@ -37,6 +37,21 @@ From TCB.Spec Require Import Model Game.
 Definition is_turn_start (s : state) : bool :=
   match s.(pend) with Window Upkeep p false => player_eqb p s.(active) | _ => false end.
 
+(** Short-circuiting [existsb] and [forallb]. Under [vm_compute], which
+    evaluates arguments first, [existsb] would search every remaining move
+    after the first that works. *)
+Fixpoint some_move (f : move -> bool) (l : list move) : bool :=
+  match l with [] => false | m :: r => if f m then true else some_move f r end.
+
+Fixpoint all_moves (f : move -> bool) (l : list move) : bool :=
+  match l with [] => true | m :: r => if f m then all_moves f r else false end.
+
+Lemma some_move_existsb : forall f l, some_move f l = existsb f l.
+Proof. intros f l. induction l as [| m r IH]; cbn; [reflexivity |]. destruct (f m); auto. Qed.
+
+Lemma all_moves_forallb : forall f l, all_moves f l = forallb f l.
+Proof. intros f l. induction l as [| m r IH]; cbn; [reflexivity |]. destruct (f m); auto. Qed.
+
 Section Checker.
 
 (** A's Walkers with at least [H] counters are huge; more than [ott] A
@@ -117,11 +132,10 @@ Fixpoint check_node (fuel : nat) (root : bool) (s : state) : bool :=
             end
           else if huge_event s then false
           else
-            let next m :=
-              let s' := step s m in negb (too_many s') && check_node f false s' in
+            let next m := let s' := step s m in if too_many s' then false else check_node f false s' in
             match to_move s with
-            | PB => existsb (fun m => hint s m && next m) (moves s)
-            | PA => forallb next (moves s)
+            | PB => some_move (fun m => if hint s m then next m else false) (moves s)
+            | PA => all_moves next (moves s)
             end
       end
   end.
@@ -293,14 +307,14 @@ Proof.
   - destruct (huge_event s) eqn:Eh; [discriminate |].
     split.
     + intros _ Hturn. rewrite Em in Hturn. rewrite Hturn in Hc.
-      apply existsb_exists in Hc as (m & Hin & Hm).
-      apply andb_true_iff in Hm as (_ & Hm). apply andb_true_iff in Hm as (_ & Hm).
+      rewrite some_move_existsb in Hc. apply existsb_exists in Hc as (m & Hin & Hm).
+      destruct (hint s m); [| discriminate]. destruct (too_many (step s m)); [discriminate |].
       exists m. split; [exact (sim_mine s t m HR Hturn Ews Eh Hin) |].
       eapply good_next; eauto.
     + intros _ Hturn m Hin. rewrite Em in Hturn. cbn in Hturn. rewrite Hturn in Hc.
       assert (Hin' : In m (moves s)) by (eapply sim_theirs; eauto).
-      rewrite forallb_forall in Hc. specialize (Hc m Hin').
-      apply andb_true_iff in Hc as (_ & Hm).
+      rewrite all_moves_forallb, forallb_forall in Hc. specialize (Hc m Hin').
+      destruct (too_many (step s m)); [discriminate |].
       eapply good_next; eauto.
 Qed.
 

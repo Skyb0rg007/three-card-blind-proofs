@@ -371,6 +371,12 @@ let () =
   | [| _; "fixcmp"; a; b |] -> compare_tables a b
   | [| _; "certify"; dir; starter |] -> Certify.run dir (pl starter)
   | [| _; "certify-win"; dir; starter |] -> Certify.certify_win dir (pl starter)
+  | [| _; "certify-safe-export"; dir; starter; outdir; chunks; fuel |] ->
+    Certify.certify_safe_export dir (pl starter) ~outdir ~chunks:(int_of_string chunks) ~fuel:(int_of_string fuel)
+  | [| _; "certify-win-export"; dir; starter; outdir; chunks; fuel |] ->
+    Certify.certify_win dir (pl starter)
+      ~export:(Certify.export_rocq ~outdir ~chunks:(int_of_string chunks) ~fuel:(int_of_string fuel))
+  | [| _; "win-cost"; dir; starter; n |] -> Certify.win_cost dir (pl starter) (int_of_string n)
   | [| _; "certify-debug"; dir; hex; v |] -> Certify.debug dir hex (int_of_string v)
   | [| _; "walk"; seed; steps |] -> Walk.run (int_of_string seed) (int_of_string steps)
   | [| _; "walk"; seed; steps; "bias" |] -> Walk.run ~bias:true (int_of_string seed) (int_of_string steps)

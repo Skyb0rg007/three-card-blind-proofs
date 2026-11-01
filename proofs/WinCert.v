@@ -44,19 +44,20 @@ Fixpoint check_win (r fuel : nat) (root : bool) (s : state) : bool :=
           if negb root && is_turn_start s then
             match below (key H tt s) r with
             | Some r' =>
-                (r' <? r) &&
-                match lookup (key H tt s) r' with
-                | Some v => v <=? s.(sideB).(life)
-                | None => false
-                end
+                if r' <? r then
+                  match lookup (key H tt s) r' with
+                  | Some v => v <=? s.(sideB).(life)
+                  | None => false
+                  end
+                else false
             | None => false
             end
           else if huge_event H s then false
           else
-            let next m := let s' := step s m in negb (too_many ott s') && check_win r f false s' in
+            let next m := let s' := step s m in if too_many ott s' then false else check_win r f false s' in
             match to_move s with
-            | PB => existsb (fun m => hint s m && next m) (moves s)
-            | PA => match moves s with [] => false | _ => forallb next (moves s) end
+            | PB => some_move (fun m => if hint s m then next m else false) (moves s)
+            | PA => match moves s with [] => false | ms => all_moves next ms end
             end
       end
   end.
@@ -85,7 +86,7 @@ Proof.
   - apply wins_over. rewrite (R_winner H s t HR). exact Hw.
   - destruct (negb root && is_turn_start s) eqn:Ht.
     + destruct (below (key H tt s) r) as [r' |]; [| discriminate].
-      apply andb_true_iff in Hc as [Hr Hc]. apply Nat.ltb_lt in Hr.
+      destruct (r' <? r) eqn:Hr; [| discriminate]. apply Nat.ltb_lt in Hr.
       destruct (lookup (key H tt s) r') as [v |] eqn:Hl; [| discriminate].
       apply Nat.leb_le in Hc.
       apply (IH r' Hr (key H tt s) v t Hl).
@@ -95,19 +96,19 @@ Proof.
       destruct (to_move s) eqn:Hm.
       * (* A to move: every real move is a certificate move *)
         destruct (moves s) as [| m0 ms] eqn:Hms; [discriminate |].
-        rewrite <- Hms in Hc. rewrite forallb_forall in Hc.
+        rewrite <- Hms, all_moves_forallb in Hc. rewrite forallb_forall in Hc.
         pose proof (moves_theirs H s t HR Hm Hh) as Emt.
         apply wins_theirs.
         -- exact Hwt.
         -- rewrite (R_to_move H s t HR). exact Hm.
         -- rewrite Emt, Hms. discriminate.
         -- intros m Hin. rewrite Emt in Hin.
-           specialize (Hc m Hin). apply andb_true_iff in Hc as [_ Hc].
+           specialize (Hc m Hin). destruct (too_many ott (step s m)); [discriminate |].
            apply (IHf false (step s m)); [exact Hc |].
            apply sim_step; [exact HR | exact Hin | exact Hh | eapply check_win_winner; exact Hc].
       * (* B to move: the hinted move is real *)
-        apply existsb_exists in Hc as [m [Hin Hc]].
-        apply andb_true_iff in Hc as [_ Hc]. apply andb_true_iff in Hc as [_ Hc].
+        rewrite some_move_existsb in Hc. apply existsb_exists in Hc as [m [Hin Hc]].
+        destruct (hint s m); [| discriminate]. destruct (too_many ott (step s m)); [discriminate |].
         apply (wins_mine PB t m).
         -- exact Hwt.
         -- rewrite (R_to_move H s t HR). exact Hm.
