@@ -105,10 +105,8 @@ Proof.
 Qed.
 
 Lemma power_rel : forall l l' i, Forall2 walker_rel l l' ->
-  (match nth_error l i with Some w => w.(counters) | None => 0 end =
-   match nth_error l' i with Some w => w.(counters) | None => 0 end) \/
-  (H <= match nth_error l i with Some w => w.(counters) | None => 0 end /\
-   H <= match nth_error l' i with Some w => w.(counters) | None => 0 end).
+  nth i (map counters l) 0 = nth i (map counters l') 0 \/
+  (H <= nth i (map counters l) 0 /\ H <= nth i (map counters l') 0).
 Proof.
   intros l l' i Hl. revert i.
   induction Hl as [| x y l l' (_ & _ & Hc) _ IH]; intros [| i]; cbn; auto.
@@ -291,8 +289,10 @@ Lemma F2_update : forall f i l l', Forall2 walker_rel l l' ->
   (forall w w', walker_rel w w' -> walker_rel (f w) (f w')) ->
   Forall2 walker_rel (update_nth i f l) (update_nth i f l').
 Proof.
-  intros f i l l' Hl Hf. revert i.
-  induction Hl as [| x y l l' Hxy Hl IH]; intros [| i]; cbn; constructor; auto.
+  intros f i l l' Hl Hf. unfold update_nth, enum.
+  rewrite <- (Forall2_length Hl). generalize 0.
+  induction Hl as [| x y l l' Hxy Hl IH]; intros k; cbn [length seq combine map]; constructor; auto.
+  destruct (k =? i); auto.
 Qed.
 
 Lemma F2_taps : forall ws l l', Forall2 walker_rel l l' ->

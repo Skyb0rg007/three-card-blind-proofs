@@ -49,6 +49,7 @@ Record side := mkSide {
   gy_w : nat;         (** Walkers in the graveyard *)
 }.
 
+(** Field updates (Rocq has no record-update syntax). *)
 Definition set_life n s :=
   mkSide n s.(city) s.(pool) s.(hand_w) s.(hand_e) s.(bf) s.(elixir_bf) s.(thop_u) s.(thop_t) s.(library) s.(gy_w).
 Definition set_city b s :=
@@ -179,15 +180,12 @@ Inductive move :=
 
 (** ** Helpers *)
 
-Fixpoint update_nth {A} (n : nat) (f : A -> A) (l : list A) : list A :=
-  match l, n with
-  | [], _ => []
-  | x :: xs, 0 => f x :: xs
-  | x :: xs, S n' => x :: update_nth n' f xs
-  end.
-
 (** [l]'s elements paired with their indices. *)
 Definition enum {A} (l : list A) : list (nat * A) := combine (seq 0 (length l)) l.
+
+(** Apply [f] to the element at index [n]. *)
+Definition update_nth {A} (n : nat) (f : A -> A) (l : list A) : list A :=
+  map (fun '(i, x) => if i =? n then f x else x) (enum l).
 
 (** Indices [i] of [l] with [f i (nth i l)] true, in increasing order. *)
 Definition indices_where {A} (f : nat -> A -> bool) (l : list A) : list nat :=
@@ -197,11 +195,9 @@ Definition indices_where {A} (f : nat -> A -> bool) (l : list A) : list nat :=
 Definition remove_indices {A} (dead : list nat) (l : list A) : list A :=
   map snd (filter (fun '(i, _) => negb (existsb (Nat.eqb i) dead)) (enum l)).
 
-Fixpoint subsets (l : list nat) : list (list nat) :=
-  match l with
-  | [] => [[]]
-  | x :: r => let rs := subsets r in rs ++ map (cons x) rs
-  end.
+(** All sublists of [l], keeping its order. *)
+Definition subsets (l : list nat) : list (list nat) :=
+  fold_right (fun x rs => rs ++ map (cons x) rs) [[]] l.
 
 (** All lists of [len] naturals whose sum is at most [total]. *)
 Fixpoint bounded_vectors (len total : nat) : list (list nat) :=
@@ -211,11 +207,9 @@ Fixpoint bounded_vectors (len total : nat) : list (list nat) :=
       flat_map (fun k => map (cons k) (bounded_vectors len' (total - k))) (seq 0 (S total))
   end.
 
-Fixpoint product {A} (choices : list (list A)) : list (list A) :=
-  match choices with
-  | [] => [[]]
-  | c :: cs => let rs := product cs in flat_map (fun x => map (cons x) rs) c
-  end.
+(** All lists taking one element from each list of [choices]. *)
+Definition product {A} (choices : list (list A)) : list (list A) :=
+  fold_right (fun c rs => flat_map (fun x => map (cons x) rs) c) [[]] choices.
 
 Section Orders.
 Context {A : Type} (dec : forall x y : A, {x = y} + {x <> y}).
@@ -294,8 +288,7 @@ Definition block_moves (s : state) : list move :=
 Definition order_moves (s : state) : list move :=
   map Order (product (map (orders blocker_eq_dec) s.(cmb).(blk))).
 
-Definition walker_power (sd : side) (i : nat) : nat :=
-  match nth_error sd.(bf) i with Some w => w.(counters) | None => 0 end.
+Definition walker_power (sd : side) (i : nat) : nat := nth i (map counters sd.(bf)) 0.
 
 Definition blocker_toughness (d : side) (b : blocker) : nat :=
   match b with BW i => walker_power d i | BT => 1 end.
@@ -451,8 +444,10 @@ Definition do_attack (ws : list nat) (k : nat) (s : state) : state :=
 Definition do_block (nw : bool) (wb : list (option nat)) (tb : list nat) (tr : nat) (s : state) : state :=
   let c := s.(cmb) in
   let blks :=
-    map (fun '(a, k) => map BW (indices_where (fun _ o => match o with Some b => b =? a | None => false end) wb) ++ repeat BT k)
-        (combine (seq 0 (length c.(atk))) tb) in
+    map (fun '(a, k) =>
+           map BW (indices_where (fun _ o => match o with Some b => b =? a | None => false end) wb)
+           ++ repeat BT k)
+        (enum tb) in
   let c := mkCombat c.(atk) c.(atk_thop) blks tr in
   let s := set_cmb c s in
   if has_multiblock c && negb nw then set_pend ChooseOrder s
