@@ -72,7 +72,7 @@ Build everything with:
 nix-shell --run 'dune build -j 4'
 ```
 
-This takes about two CPU-hours: Rocq runs the checker on 1.5M positions for
+This takes about 2.5 CPU-hours (50 minutes with `-j 3`): Rocq runs the checker on 1.5M positions for
 the B-first claim and 1.6M for the A-first one. Each job needs about 1 GB of
 memory, so choose `-j` to fit your machine.
 
@@ -93,10 +93,14 @@ Check b_first_b_wins_holds.  (* : b_first_b_wins *)
 
 Only Rocq itself: its kernel, including the bytecode virtual machine behind
 `vm_compute`, and its primitive integers and arrays, which the kernel computes
-with machine operations. The tables need no
-trust: the checks run inside Rocq, and a wrong entry would make a chunk fail to
-compile. The solver that computed them (`rsolver/`, `solver/`) is not part of
-the proof.
+with machine operations.
+
+You don't have to trust the tables in `proofs/bfirst` and `proofs/afirst`,
+the solver that computed them (`rsolver/`, `solver/`), or `xz`. Rocq checks
+every entry of each table during the build. The theorems in `proofs/core`
+say that any table whose entries all pass that check proves the claim, so a
+wrong or corrupted table can only make the build fail. It can't make it prove
+something false.
 
 ### Reproducing the tables
 

@@ -94,11 +94,11 @@ impl Cfg {
     }
 
     /// Clamp after a step: the opponent's Walkers at most huge, the
-    /// protagonist's Thopters at most tt (tapped ones go first).
+    /// protagonist's Thopters at most tt (tapped ones go first), and with
+    /// `TCB_LAX=many` the opponent's at most ott.
     pub fn clamp(&self, s: &mut State) {
         let huge = self.huge();
-        let tt = self.tt;
-        let cut = |sd: &mut Side| {
+        let cut = |sd: &mut Side, tt: u32| {
             let total = sd.thop_u + sd.thop_t;
             if total > tt {
                 let extra = total - tt;
@@ -116,10 +116,10 @@ impl Cfg {
                 }
             }
             if !self.strict("many") {
-                cut(os);
+                cut(os, self.ott);
             }
         }
-        cut(s.side_mut(self.prot));
+        cut(s.side_mut(self.prot), self.tt);
     }
 
     /// Does this move make an exact huge size matter (a loss for the protagonist)?
