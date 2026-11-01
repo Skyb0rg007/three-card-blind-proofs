@@ -9,6 +9,10 @@
 //!                                     from the start at B life L and tally its
 //!                                     leaves by rule (trace.rs); the same TCB_*
 //!                                     variables as the solve
+//! With `TCB_BIG=1`, `fix safe A` keeps ranks with `TCB_RANKS=1` (for
+//! `trace`; exact in `TCB_LAX=adapt`, see `solver::solve_big`).
+//! `TCB_ROOT=HEX` (fix and trace) starts from that packed turn-start key
+//! (as `TCB_TRACE_KEYS=1` prints them) instead of the opening.
 mod fix;
 mod model;
 mod progstat;
@@ -36,6 +40,18 @@ fn pl(s: &str) -> Player {
         "A" => Player::A,
         "B" => Player::B,
         _ => panic!("player must be A or B"),
+    }
+}
+
+/// The opening, or with `TCB_ROOT=HEX` the turn start of that packed key
+/// (B's life in it is irrelevant: values are thresholds).
+pub fn start_state(starter: Player) -> model::State {
+    match std::env::var("TCB_ROOT") {
+        Ok(h) => {
+            let k: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect();
+            fix::of_key(&k)
+        }
+        Err(_) => model::init(starter),
     }
 }
 
@@ -128,7 +144,7 @@ fn big_cmd(c: &Cfg, starter: &str) {
         Some(d) => std::path::PathBuf::from(d),
         None => std::path::PathBuf::from(std::env::var("TCB_WORK").unwrap_or("tables".into())).join(format!(".work-r{}", std::process::id())),
     };
-    let s0 = model::init(pl(starter));
+    let s0 = start_state(pl(starter));
     let (sv, progs) = solver::reach(c, &s0, &dir);
     println!("{} positions ({} bases at {} levels)", sv.n, sv.nb, sv.nl);
     if c.prot == Player::B {
@@ -184,7 +200,7 @@ fn fix_cmd(mode: &str, who: &str, t: &str, tt: &str, lmax: &str, starter: &str) 
         None => std::path::PathBuf::from(std::env::var("TCB_WORK").unwrap_or("tables".into()))
             .join(format!(".work-r{}", std::process::id())),
     };
-    let s0 = model::init(pl(starter));
+    let s0 = start_state(pl(starter));
     let (sv, progs) = solver::reach(&c, &s0, &dir);
     println!("{} positions ({} bases at {} levels)", sv.n, sv.nb, sv.nl);
     let start = if mode == "safe" { if c.up() { 1 } else { INF } } else { c.lose() };

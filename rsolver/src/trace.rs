@@ -18,6 +18,12 @@
 //!   decided leaf or by closing a cycle (a real escape, within the
 //!   abstraction). With `TCB_BIG=1` (a saved BIG B-win table, with its
 //!   `beta` file) the trace keeps the BIG Walker's exact excess n.
+//! - **BIG A-safe table** (`TCB_BIG=1`, solved with `TCB_RANKS=1`): as the
+//!   A-safe trace, at the BIG Walker's exact excess n. A turn start is lost
+//!   at (L, n) when c + b n < L, and its round is the first logged line
+//!   with c + b n < L (lines only decrease). Each turn is searched per n,
+//!   so a B win that only the line arithmetic gives (the componentwise min
+//!   at B's nodes, or a clamp of c or b) shows up as "not confirmed".
 //!
 //! Inside a turn the trace searches the model directly (as `eval_turn`),
 //! reading turn starts from the table. Where the traced side has several
@@ -139,18 +145,26 @@ impl Table {
         let v = self.val(i);
         if v >= INF || v <= NINF { v } else { v + self.beta(i) * n }
     }
-    /// A-safe with ranks: the first round in which position i's value went
-    /// below l (B wins at l from then on), if it ever did.
-    pub fn lost_round(&self, i: usize, l: i64) -> Option<u32> {
-        self.lost_at(i, l).map(|x| x.0)
+    /// A-safe with ranks: the first round in which position i's value
+    /// (in BIG mode, at excess n) went below l (B wins at l from then on),
+    /// if it ever did.
+    pub fn lost_round(&self, i: usize, l: i64, n: i64) -> Option<u32> {
+        self.lost_at(i, l, n).map(|x| x.0)
     }
-    /// The same round, with the value set in it.
-    pub fn lost_at(&self, i: usize, l: i64) -> Option<(u32, i64)> {
+    /// The same round, with the value set in it (at n).
+    pub fn lost_at(&self, i: usize, l: i64, n: i64) -> Option<(u32, i64)> {
         let (hidx, hrec) = self.hist.as_ref().expect("the A-safe trace needs a table solved with TCB_RANKS=1");
         let at = |k: usize| u64::from_le_bytes(hidx[8 * k..8 * k + 8].try_into().unwrap()) as usize;
         for p in at(i)..at(i + 1) {
             let r = u32::from_le_bytes(hrec[8 * p..8 * p + 4].try_into().unwrap());
-            let v = fix::of32(i32::from_le_bytes(hrec[8 * p + 4..8 * p + 8].try_into().unwrap()));
+            let x = i32::from_le_bytes(hrec[8 * p + 4..8 * p + 8].try_into().unwrap());
+            let v = if self.beta.is_some() {
+                // a BIG table logs lines (`solver::lenc`)
+                let ln = crate::solver::ldec(x);
+                if ln.special() { ln.c } else { ln.c + ln.b * n }
+            } else {
+                fix::of32(x)
+            };
             if v < l {
                 return Some((r, v));
             }
@@ -233,7 +247,8 @@ impl<'a> Tr<'a> {
         let v = self.tb.at(i, n);
         if self.side == Player::B {
             // A-safe: B wins at l when v < l; v is at most lmax
-            if l > self.c.lmax {
+            // (in BIG mode only c is clamped: c + b n may exceed lmax)
+            if l > self.c.lmax && (!self.c.big || v < l) {
                 return (true, K_LMAX, None, 0);
             }
             if v >= l {
@@ -241,7 +256,7 @@ impl<'a> Tr<'a> {
             }
             // trace the child at the least B life lost by the same round
             // (a witness there also wins with more life, by monotonicity)
-            let (r, vr) = self.tb.lost_at(i, l).expect("lost without a record");
+            let (r, vr) = self.tb.lost_at(i, l, n).expect("lost without a record");
             let ok = kind == K_BELOW || r < cx.bound;
             let lc = if vr <= NINF { 1 } else { (vr + 1).max(1) };
             (ok, kind, Some((i as u32, lc as i32, n as i32)), (lvl as u64) << 24 | r as u64)
@@ -495,7 +510,7 @@ impl<'a> Tr<'a> {
     fn cx_for(&self, nd: Node) -> Cx {
         let (i, l, _) = nd;
         let level = (i as usize / self.tb.nb) as u32 + 1;
-        let bound = if self.side == Player::B { self.tb.lost_round(i as usize, l as i64).expect("not lost") } else { 0 };
+        let bound = if self.side == Player::B { self.tb.lost_round(i as usize, l as i64, nd.2 as i64).expect("not lost") } else { 0 };
         Cx { level, bound, memo: HashMap::default(), vmemo: HashMap::default(), lmemo: HashMap::default() }
     }
 
@@ -573,6 +588,10 @@ fn print_turn(t: &Tr, nd: Node, path: &[Move]) {
     let mut s = t.state_of(nd);
     let (l0, mut n) = (nd.1 as i64, nd.2 as i64);
     println!("    turn start: {}", short(c, &s, l0, n));
+    if std::env::var("TCB_TRACE_KEYS").ok().as_deref() == Some("1") {
+        let k: String = fix::key_gen(c.full_a, &s).iter().map(|x| format!("{x:02x}")).collect();
+        println!("      key {k}");
+    }
     let mut line = String::new();
     for m in path {
         let who = if to_move(&s) == Player::A { "A" } else { "B" };
@@ -728,8 +747,8 @@ fn frontier_report(ta: &Tr, tbw: &Tr, nd: Node, print: bool) -> [u64; 4] {
 pub fn run(c: &Cfg, dir: &str, starter: Player, lives: &[i64]) {
     let tb = Table::open(Path::new(dir));
     let side = c.prot.opp();
-    if c.big && side == Player::B {
-        eprintln!("trace: BIG mode is supported for the B-win trace only (the A-safe trace needs ranks)");
+    if c.big && side == Player::B && tb.hist.is_none() {
+        eprintln!("trace: a BIG A-safe table needs ranks (solve it with TCB_RANKS=1)");
         std::process::exit(2);
     }
     if c.big != tb.beta.is_some() {
@@ -744,7 +763,7 @@ pub fn run(c: &Cfg, dir: &str, starter: Player, lives: &[i64]) {
     if t.pv {
         println!("following only the protagonist's best replies (TCB_TRACE_PV=1)");
     }
-    let s0 = init(starter);
+    let s0 = crate::start_state(starter);
     let i0 = tb.id(&fix::key_gen(c.full_a, &s0)).expect("start not in the table");
     println!("table {dir}: {} positions ({} bases x {} levels); start value {}{}", tb.nb * tb.nl, tb.nb, tb.nl, tb.val(i0), if c.big { format!(", beta {}", tb.beta(i0)) } else { String::new() });
     let jobs = crate::solver::jobs();
@@ -861,7 +880,13 @@ pub fn run(c: &Cfg, dir: &str, starter: Player, lives: &[i64]) {
             println!(
                 "  {} traced turn starts where the turn, searched directly from the table, does not confirm the stored value{}",
                 loose.len(),
-                if c.big { " (BIG: the line's componentwise or single-line choice; a per-n search disagrees)" } else { " (A RED FLAG: the table disagrees with the model)" }
+                if c.big && side == Player::A {
+                    " (BIG: the line's componentwise or single-line choice; a per-n search disagrees)"
+                } else if c.big {
+                    " (BIG: the componentwise min at B's nodes, A's single-line choice, or a clamp of c or b; a per-n search disagrees)"
+                } else {
+                    " (A RED FLAG: the table disagrees with the model)"
+                }
             );
             let inf = loose.iter().filter(|&&k| tb.val(nodes[k as usize].0 .0 as usize) >= INF).count();
             let nbig = loose.iter().filter(|&&k| t.has_big(&t.state_of(nodes[k as usize].0))).count();

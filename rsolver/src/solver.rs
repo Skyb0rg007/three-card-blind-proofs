@@ -305,54 +305,81 @@ impl Deps {
     }
 }
 
-/// Iterate to the fixed point from `start`, one A-life level at a time,
-/// lowest first (Fix.solve without ranks or warm starts).
 /// Sort the rank log by position: `hidx` holds n + 1 offsets (u64) into
 /// `hrec`, whose records are (round u32, value i32) in increasing round
-/// order. A position's last record is its final value.
-fn index_hist(sv: &Solver, nrec: u64, start: i64) {
-    let raw = unsafe { Mmap::map(&File::open(sv.dir.join("hist-raw")).unwrap()).unwrap() };
-    let rec = |k: usize| {
-        let b = &raw[16 * k..16 * k + 16];
-        (u64::from_le_bytes(b[0..8].try_into().unwrap()) as usize, &b[8..16])
+/// order. A position's last record is its final value (in BIG mode a line,
+/// `lenc`). The raw log is streamed, not mapped, and `hrec` is written in
+/// slices of positions whose records fit in `TCB_HIST_MEM` megabytes
+/// (default 256), one pass over the log per slice, so that memory stays
+/// small.
+fn index_hist(sv: &Solver, nrec: u64, start: i64, beta: Option<&[i8]>) {
+    use std::io::{BufReader, Read};
+    let n = sv.n;
+    let raw = sv.dir.join("hist-raw");
+    let stream = |f: &mut dyn FnMut(usize, &[u8])| {
+        let mut r = BufReader::with_capacity(1 << 22, File::open(&raw).unwrap());
+        let mut b = [0u8; 16];
+        for _ in 0..nrec {
+            r.read_exact(&mut b).unwrap();
+            f(u64::from_le_bytes(b[0..8].try_into().unwrap()) as usize, &b[8..16]);
+        }
     };
-    let mut off = vec![0u64; sv.n + 1];
-    for k in 0..nrec as usize {
-        off[rec(k).0 + 1] += 1;
-    }
-    for i in 0..sv.n {
+    let mut off = vec![0u64; n + 1];
+    stream(&mut |i, _| off[i + 1] += 1);
+    for i in 0..n {
         off[i + 1] += off[i];
     }
-    let f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(sv.dir.join("hrec")).unwrap();
-    f.set_len(8 * nrec).unwrap();
-    let mut out = unsafe { MmapMut::map_mut(&f).unwrap() };
-    let mut pos = off.clone();
-    for k in 0..nrec as usize {
-        let (i, b) = rec(k);
-        let p = pos[i] as usize;
-        out[8 * p..8 * p + 8].copy_from_slice(b);
-        pos[i] += 1;
+    let cap = (std::env::var("TCB_HIST_MEM").ok().and_then(|x| x.parse().ok()).unwrap_or(256u64) << 20) / 8;
+    let mut w = BufWriter::new(File::create(sv.dir.join("hrec")).unwrap());
+    let mut p0 = 0;
+    while p0 < n {
+        let mut p1 = p0 + 1;
+        while p1 < n && off[p1 + 1] - off[p0] <= cap && (p1 - p0) as u64 <= cap {
+            p1 += 1;
+        }
+        let base = off[p0];
+        let mut buf = vec![0u8; 8 * (off[p1] - base) as usize];
+        if !buf.is_empty() {
+            let mut cur: Vec<u64> = off[p0..p1].to_vec();
+            stream(&mut |i, b| {
+                if (p0..p1).contains(&i) {
+                    let q = (cur[i - p0] - base) as usize;
+                    buf[8 * q..8 * q + 8].copy_from_slice(b);
+                    cur[i - p0] += 1;
+                }
+            });
+        }
+        // the last record of each position is its final value
+        for i in p0..p1 {
+            let last = (off[i + 1] > off[i]).then(|| {
+                let q = (off[i + 1] - 1 - base) as usize;
+                i32::from_le_bytes(buf[8 * q + 4..8 * q + 8].try_into().unwrap())
+            });
+            match beta {
+                None => {
+                    let v = last.map_or(start, fix::of32);
+                    assert_eq!(v, sv.get(i), "rank log disagrees with the value of position {i}");
+                }
+                Some(beta) => {
+                    let v = last.map_or(LINF, ldec);
+                    assert!(v.c == sv.get(i) && v.b == beta[i] as i64, "rank log disagrees with the line of position {i}");
+                }
+            }
+        }
+        w.write_all(&buf).unwrap();
+        p0 = p1;
     }
-    out.flush().unwrap();
-    // the last record of each position is its final value
-    for i in 0..sv.n {
-        let v = if off[i + 1] > off[i] {
-            let p = off[i + 1] as usize - 1;
-            fix::of32(i32::from_le_bytes(out[8 * p + 4..8 * p + 8].try_into().unwrap()))
-        } else {
-            start
-        };
-        assert_eq!(v, sv.get(i), "rank log disagrees with the value of position {i}");
-    }
+    w.flush().unwrap();
     let mut w = BufWriter::new(File::create(sv.dir.join("hidx")).unwrap());
     for o in &off {
         w.write_all(&o.to_le_bytes()).unwrap();
     }
-    drop(raw);
-    let _ = fs::remove_file(sv.dir.join("hist-raw"));
+    let _ = fs::remove_file(&raw);
     println!("  ranks: {nrec} records");
 }
 
+/// Iterate to the fixed point from `start`, one A-life level at a time,
+/// lowest first (Fix.solve without warm starts).
 pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
     let t0 = Instant::now();
     let n = sv.n;
@@ -488,7 +515,7 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
     drop(work);
     if let Some(h) = hist.take() {
         drop(h);
-        index_hist(sv, nhist, start);
+        index_hist(sv, nhist, start, None);
     }
     let files = progs.maps.len();
     drop(progs);
@@ -533,7 +560,7 @@ fn lenc(v: Line) -> i32 {
         (16 * v.c + v.b) as i32
     }
 }
-fn ldec(x: i32) -> Line {
+pub fn ldec(x: i32) -> Line {
     match x {
         i32::MAX => LINF,
         i32::MIN => LNINF,
@@ -564,6 +591,13 @@ fn ldec(x: i32) -> Line {
 /// in a total order on a finite set, so this terminates. Stopping at the
 /// value one level down (`fin`) only stops improvements.
 ///
+/// With ranks (`TCB_RANKS=1`, A-safe only), each level is solved in
+/// synchronous rounds and every change is logged as (position, round,
+/// `lenc` of the line), as `solve` does, for `rsolver trace`. In
+/// `TCB_LAX=adapt` the operator is monotone componentwise (`lmaxc`, `lmin`,
+/// `ltrans`, `norm_big`), so the rounds reach the same greatest fixed point
+/// as the worklist; with a single-line choice they may not.
+///
 /// Writes c to the table's values and returns b per position (digest
 /// order).
 pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
@@ -582,6 +616,10 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
     let deps = Deps::build(sv, &progs, w);
     let dirty: Vec<AtomicBool> = (0..nb).map(|_| AtomicBool::new(false)).collect();
     let mut evals = 0u64;
+    let ranks = std::env::var("TCB_RANKS").ok().as_deref() == Some("1");
+    assert!(!(ranks && up), "BIG B-win keeps no ranks");
+    let mut hist = ranks.then(|| BufWriter::new(File::create(sv.dir.join("hist-raw")).unwrap()));
+    let mut nhist = 0u64;
     for slot in 0..sv.nl {
         let l = sv.life_of_slot(slot) as i64;
         let first = slot * nb;
@@ -602,7 +640,7 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
         loop {
             sweeps += 1;
             let forward = sweeps & 1 == 1;
-            let ev: u64 = std::thread::scope(|sc| {
+            let r: Vec<(u64, Vec<(usize, Line)>)> = std::thread::scope(|sc| {
                 let hs: Vec<_> = (0..w)
                     .map(|k| {
                         let (value, fin, progs, dirty, deps, wget, wset, keep) = (&value, &fin, &progs, &dirty, &deps, &wget, &wset, &keep);
@@ -610,6 +648,7 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
                             let (lo, hi) = chunk(nb, w, k);
                             let (mut nv, mut tv) = (Vec::new(), Vec::new());
                             let mut ev = 0u64;
+                            let mut upd: Vec<(usize, Line)> = Vec::new();
                             for x in lo..hi {
                                 let j = if forward { x } else { lo + hi - 1 - x };
                                 if !dirty[j].swap(false, Relaxed) || fin(j) {
@@ -620,18 +659,37 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
                                 let old = wget(first + j);
                                 let v = keep(old, v);
                                 if v != old {
+                                    if ranks {
+                                        upd.push((j, v));
+                                        continue;
+                                    }
                                     wset(first + j, v);
                                     for &d in deps.of(j) {
                                         dirty[d as usize].store(true, Relaxed);
                                     }
                                 }
                             }
-                            ev
+                            (ev, upd)
                         })
                     })
                     .collect();
-                hs.into_iter().map(|h| h.join().unwrap()).sum()
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
             });
+            let mut ev = 0u64;
+            for (e, upd) in r {
+                ev += e;
+                for (j, v) in upd {
+                    wset(first + j, v);
+                    for &d in deps.of(j) {
+                        dirty[d as usize].store(true, Relaxed);
+                    }
+                    let h = hist.as_mut().unwrap();
+                    h.write_all(&((first + progs.perm[j] as usize) as u64).to_le_bytes()).unwrap();
+                    h.write_all(&(sweeps as u32).to_le_bytes()).unwrap();
+                    h.write_all(&lenc(v).to_le_bytes()).unwrap();
+                    nhist += 1;
+                }
+            }
             evals += ev;
             if ev == 0 {
                 break;
@@ -658,6 +716,11 @@ pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
             sv.set(slot * nb + b as usize, v.c);
             beta[slot * nb + b as usize] = v.b as i8;
         }
+    }
+    drop(work);
+    if let Some(h) = hist.take() {
+        drop(h);
+        index_hist(sv, nhist, INF, Some(&beta));
     }
     beta
 }
