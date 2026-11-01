@@ -97,7 +97,13 @@ fn big_cmd(c: &Cfg, starter: &str) {
     }
     println!("BIG mode: K = {k}, reference n = {}, BIG check {}", c.bigref, if c.bigcheck_on() { "on" } else { "off" });
     let t0 = Instant::now();
-    let dir = std::path::PathBuf::from(std::env::var("TCB_WORK").unwrap_or("tables".into())).join(format!(".work-r{}", std::process::id()));
+    // TCB_SAVE=DIR keeps dig, keys, vals (c) and beta (one byte per
+    // position) there, for comparisons; it is not a table `fixload` reads
+    let save = std::env::var("TCB_SAVE").ok();
+    let dir = match &save {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::path::PathBuf::from(std::env::var("TCB_WORK").unwrap_or("tables".into())).join(format!(".work-r{}", std::process::id())),
+    };
     let s0 = model::init(pl(starter));
     let (sv, progs) = solver::reach(c, &s0, &dir);
     println!("{} positions ({} bases at {} levels)", sv.n, sv.nb, sv.nl);
@@ -116,7 +122,12 @@ fn big_cmd(c: &Cfg, starter: &str) {
         solver::spot_check_big(c, &sv, &beta);
     }
     drop(sv);
-    let _ = std::fs::remove_dir_all(&dir);
+    if save.is_some() {
+        std::fs::write(dir.join("beta"), beta.iter().map(|&b| b as u8).collect::<Vec<u8>>()).unwrap();
+        println!("saved c and beta to {}", dir.display());
+    } else {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 fn fix_cmd(mode: &str, who: &str, t: &str, tt: &str, lmax: &str, starter: &str) {

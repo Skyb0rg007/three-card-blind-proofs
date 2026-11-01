@@ -736,3 +736,64 @@ Walker, Elixir on the battlefield, no Thopters, A to move:
   enough and cover thresholds that depend non-monotonically on B's Walker;
   no single linear inequality like "B's life ≤ 5 × A's Walker" will do.
 
+
+**A parametric big Walker (`TCB_BIG=1`).** `rsolver fix safe A` with
+`TCB_BIG=1` makes one A Walker unbounded. With K = `t` + 1 above every B
+creature total ((`ot` + 1) + `ott`) and above 20, a pump from `t` makes a
+Walker BIG: it is stored at K and stands for K + n counters, n ≥ 0 unknown.
+Pumping it again keeps K (n → n + 1). A second Walker stays capped at `t`.
+BIG can't die, and every comparison involving it comes out the same for all
+n. Only unblocked damage to B depends on n. `TCB_BIGCHECK=1` (always on in
+debug builds) checks this for every compiled BIG state against BIG + 3.
+
+Values are lines (c, β): A is safe at B life L ≤ c + βn. The edges are exact:
+- B's life changing by d gives c − d;
+- an unblocked BIG adds 1 to β;
+- a pump on BIG reads the child at n + 1, which gives (c + β, β);
+- making BIG reads the child at n = 0, which gives β = 0.
+
+The nodes are sound lower bounds:
+- B's nodes take the componentwise min.
+- A's nodes keep one child, the larger at n = `TCB_BIGREF` (default 20).
+- B's death after damage is the line (−d, 1 if BIG hit), and the larger of it
+  and the child at n = `TCB_BIGREF` is kept.
+
+Turn starts clamp c ≤ `lmax` and β ≤ 8, and drop a line to "lost" if it is
+below 1 and flat, or if c < −`lmax`. All of these only lower values. Each
+evaluation keeps the componentwise min with the old line, so at stability
+v ≤ F(v). The spot check confirms that against direct evaluation.
+
+Results, A first, A macro, B filtered, strict R4 (no `TCB_LAX`), `lmax` 100:
+
+| `t`/`tt`, B Walker cap `ot`, `ott` | BIG | A safe with | positions | time, peak RSS |
+|---|---|---|---|---|
+| 23/8, 14, 8 | yes (K = 24) | B life ≤ 15 (β = 0) | 95.0M | 4.8 min, 2.2–2.7 GB |
+| 23/8, 14, 8 | no | B life ≤ 15 | 89.3M | 3.5 min, 2.3 GB |
+| 29/8, 20, 8 | yes (K = 30) | not run: 8.8M bases, 2.4 GB of programs, over 3 GB | | |
+
+The BIG Walker doesn't move the opening. It stays at 15 under each of these
+changes:
+- `TCB_BIGREF` 0 or 100;
+- `lmax` 300;
+- A pumping both Walkers at B's end step (`TCB_AMACRO=atk,order,dmg`);
+- (unsound, optimistic for A) B's huge-Walker rules relaxed (`TCB_LAX=dmg,die`),
+  B's Thopters cut at `ott` (`many`), or both.
+
+So in this abstraction neither A's cap nor B's caps set the 15. At A life
+20, 64% of the 283k BIG positions are lost. The share rises with B's material:
+- B with no Walker: 22% lost;
+- B Walker 14: 82%; B Walker huge: 84%;
+- B with no Thopters: 37%; B with 8 Thopters: 81%.
+
+Relaxing every B cap only lowers 64% to 58%. Of the BIG positions that
+aren't lost, 70% have β = 0, and β never exceeds 6.
+
+The likely limit is the line itself. A must choose one move for every n,
+but A's real best play depends on n (attack once K + n beats B's life,
+otherwise wait). The best value is then a max of lines, and a single line
+can't represent it. On a small configuration (`t` 20, `tt` 4, `ot` 5, `ott` 6),
+compare the BIG c at n = 0 with a scalar run capped at 28, which only
+restricts A. At `TCB_BIGREF` 20, BIG is lower at 196k of 1.42M BIG positions
+(54k of them lost only in BIG). At `TCB_BIGREF` 0, it is lower at 19k, by 1–4.
+Choosing for large n gives up value at small n. A union of lines per position,
+or an A choice that depends on n, would be the next step.
