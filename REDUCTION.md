@@ -553,6 +553,7 @@ The B-win side, same B (Walker 6, Thopters 8, B's moves filtered), A first:
 | filtered | 24 | 12 | strict | B life ≥ 24 |
 | filtered | 32 | 12 | strict | B life ≥ 24 |
 | filtered, B Walker 6, B Thopters 6 | 40 | 8 | strict | B life ≥ 24 (84M positions, 5.5 min, 3 GB) |
+| filtered, B Walker 6, B Thopters 6 | 64 | 8 | strict | B life ≥ 24 (176M positions, 9.3 min, 6.4 GB) |
 
 The whole gap between 18 and 24 is the huge-Walker rule: in the strict check,
 an A Walker past `ot` that attacks unblocked or fights a big block is a loss
@@ -589,3 +590,12 @@ So cutting such a Walker to K and charging B one life per counter cut is
 unsound (tried: it would give B the win from 16, with every legal A move).
 A sound treatment has to charge each hit its real size, which keeps the exact
 size in the state.
+
+**Growth is A's defence (against a small B).** The strict B-win is sound and
+only forces B to chump A Walkers above `ot`; B may take any hit from a smaller
+one. With A's Walkers exact up to 64, far above any life B banks in these
+lines, B still needs 24. Against the same small B, an A capped at 24–64 loses
+from 17. So B's capped wins come from A having to stop growing, not from B
+outbanking a growing A. This supports the A-safe hypothesis. A proof has to
+show that A can keep growing safely forever, against a B whose Walker and
+Thopters may grow too: an argument over unbounded sizes, beyond any table.
