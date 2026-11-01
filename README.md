@@ -41,6 +41,8 @@ This repo contains a [Rocq][] mechanization of the problem and a proof of the so
 | B plays first | B can force a win |
 | A plays first | A can't force a win (B never loses; whether B can force a win is still open) |
 
+`STRATEGY.md` describes, in plain Magic terms, how B wins when B plays first.
+
 ## Auditing the result
 
 The repository is split so that you only have to read one directory.
