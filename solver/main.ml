@@ -345,6 +345,48 @@ let () =
         Fix.line c sv s0 life n
       end
   in
+  (* fixstats TABLE: at A's life 20, how a B-win table's values depend on the
+     size of A's smaller Walker (positions where A has two Walkers): how many
+     positions, how many B can't win with any life, and the most life B needs
+     where it can win. *)
+  let stats path =
+    let _, sv = Fix.load path in
+    let lo = if sv.Fix.nl = 0 then 0 else 19 * sv.Fix.nb in
+    let buckets = [| 0; 7; 13; 21; 33; 49; 1000 |] in
+    let nbk = Array.length buckets - 1 in
+    let cnt = Array.make nbk 0 and never = Array.make nbk 0 and worst = Array.make nbk 0 in
+    for i = lo to lo + sv.Fix.nb - 1 do
+      let s = Fix.of_key (Fix.key_at sv i) in
+      match s.sideA.bf with
+      | [ w1; w2 ] ->
+        let a = min w1.counters w2.counters in
+        let k = ref 0 in
+        while a >= buckets.(!k + 1) do incr k done;
+        let v = Fix.get sv i in
+        cnt.(!k) <- cnt.(!k) + 1;
+        if v >= Fix.inf then never.(!k) <- never.(!k) + 1 else worst.(!k) <- max worst.(!k) v
+      | _ -> ()
+    done;
+    for k = 0 to nbk - 1 do
+      Printf.printf "smaller A Walker %d-%d: %d positions, %d with no B win, B needs at most %d elsewhere\n"
+        buckets.(k) (buckets.(k + 1) - 1) cnt.(k) never.(k) worst.(k)
+    done;
+    (* for A's smaller Walker in 21-48: by B's Thopters and B's Walker *)
+    let tbl = Hashtbl.create 100 in
+    for i = lo to lo + sv.Fix.nb - 1 do
+      let s = Fix.of_key (Fix.key_at sv i) in
+      match s.sideA.bf with
+      | [ w1; w2 ] when min w1.counters w2.counters >= 21 && min w1.counters w2.counters <= 48 ->
+        let bw = match s.sideB.bf with [] -> 0 | w :: _ -> w.counters in
+        let k = (s.sideB.thop_u + s.sideB.thop_t, bw, s.sideA.thop_u + s.sideA.thop_t) in
+        let n, nv = Option.value (Hashtbl.find_opt tbl k) ~default:(0, 0) in
+        Hashtbl.replace tbl k (n + 1, if Fix.get sv i >= Fix.inf then nv + 1 else nv)
+      | _ -> ()
+    done;
+    Hashtbl.fold (fun k v acc -> (k, v) :: acc) tbl [] |> List.sort compare
+    |> List.iter (fun ((bt, bw, at), (n, nv)) ->
+        Printf.printf "B Thopters %d, B Walker %d, A Thopters %d: %d positions, %d%% no B win\n" bt bw at n (100 * nv / n))
+  in
   (* fixcmp OLD NEW: every position of table OLD has the same value in NEW *)
   let compare_tables a b =
     let _, sa = Fix.load a and _, sb = Fix.load b in
@@ -379,6 +421,7 @@ let () =
   | [| _; "walk"; seed; steps |] -> Walk.run (int_of_string seed) (int_of_string steps)
   | [| _; "walk"; seed; steps; "bias" |] -> Walk.run ~bias:true (int_of_string seed) (int_of_string steps)
   | [| _; "fix"; mode; who; t; tt; lmax; starter |] -> run mode who t tt lmax (init (pl starter))
+  | [| _; "fixstats"; path |] -> stats path
   | [| _; "fixload"; path |] -> load path 0 None
   | [| _; "fixload"; path; n |] -> load path (int_of_string n) None
   | [| _; "fixload"; path; n; l |] -> load path (int_of_string n) (Some (int_of_string l))

@@ -599,3 +599,23 @@ from 17. So B's capped wins come from A having to stop growing, not from B
 outbanking a growing A. This supports the A-safe hypothesis. A proof has to
 show that A can keep growing safely forever, against a B whose Walker and
 Thopters may grow too: an argument over unbounded sizes, beyond any table.
+
+`main fixstats TABLE` on that table (A's life 20, A with two Walkers): the
+share of positions B can't win with any life grows with A's smaller Walker,
+11% at 0–6, 17% at 7–12, 29% at 13–20, 45% at 21–32, 63% at 33–48. For A's
+smaller Walker in 21–48 it is decided by B's material:
+
+| B's Thopters + B's Walker | no B win at any life |
+|---|---|
+| up to about 3 | about 100% |
+| about 5–6 | about half |
+| 8 or more | about 1% |
+
+So with A's Walkers large, B still wins once it holds about 8 between its
+Walker and Thopters (given enough life; values reach lmax). In that table B is
+capped at Walker 6 and Thopters 6, but in the real game B's Walker grows
+without bound too. Whether A is safe therefore turns on a race between two
+unbounded growths: B's material and life against A's Walker sizes and A's
+pressure on B's mana (an A Walker attacking every turn forces B to spend
+mana on chump blockers). That race is what a symbolic invariant has to
+capture.
