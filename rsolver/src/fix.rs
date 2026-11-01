@@ -656,7 +656,10 @@ fn eval_go_big(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> Line, local: &mut HashM
             let mut s2 = step(s, &m);
             c.clamp(&mut s2);
             let f = c.big_flags(s, &m);
-            if c.too_many(&s2) || f & F_SECOND != 0 {
+            if f & F_SECOND != 0 && !c.strict("second") {
+                // dropped (TCB_LAX=second): what the mover never picks
+                if mine { lost } else if up { LNINF } else { LINF }
+            } else if c.too_many(&s2) || f & F_SECOND != 0 {
                 lost
             } else {
                 c.big_fix(f, &m, &mut s2);
@@ -790,7 +793,8 @@ pub fn compile(c: &Cfg, tgt: &dyn Fn(&State) -> i64, s: &State) -> (Vec<i32>, us
         let f = cx.c.big_flags(s, m);
         if f & F_SECOND != 0 {
             cx.second += 1;
-            return Cref::Const(cx.lost);
+            // TCB_LAX=second (unsound, a diagnostic): drop the move instead
+            return Cref::Const(if cx.c.strict("second") { cx.lost } else { cx.won });
         }
         cx.c.big_fix(f, m, &mut s2);
         let d = s2.side_b.life as i64 - s.side_b.life as i64;

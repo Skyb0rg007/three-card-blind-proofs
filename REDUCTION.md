@@ -800,3 +800,74 @@ restricts A. At `TCB_BIGREF` 20, BIG is lower at 196k of 1.42M BIG positions
 (54k of them lost only in BIG). At `TCB_BIGREF` 0, it is lower at 19k, by 1–4.
 Choosing for large n gives up value at small n. A union of lines per position,
 or an A choice that depends on n, would be the next step.
+
+**The big Walker in the B win (`fix win B` with `TCB_BIG=1`).** The same
+idea, mirrored, replaces the strict rule's huge events. A's first Walker past
+`ot` becomes BIG at K = `ot` + 1 instead of saturating. K must exceed B's
+largest total (`t` + `tt`: B's Walker and Thopters are capped as B is the
+protagonist), so BIG never dies and every fight comes out the same for all n.
+Its unblocked hit is an `F_HIT` edge, not a huge event.
+
+Lines are upper bounds on the life B needs: B wins whenever L ≥ c + βn.
+- A's nodes take the componentwise max.
+- B's nodes keep one line, the smaller at n = `TCB_BIGREF`.
+- After combat damage, B must also survive: componentwise max with
+  (1 − d, 1 if BIG hit).
+- Turn starts only raise: c below 1 goes to 1, and c > `lmax` or β > 8
+  becomes "never".
+- A new line replaces the old one only if it is smaller in B's choice order.
+  A componentwise min of two B-win lines would not be an upper bound.
+
+Soundness is by induction on time, not monotonicity. Every stored line was
+computed from lines stored earlier, so each is a true B win with a finite
+strategy. There are no ranks yet.
+
+A second Walker reaching K counts as a loss for B (`F_SECOND`), which is
+sound. Tracking two n's would need to tell the two BIG Walkers apart after the
+Walkers are sorted. `TCB_LAX=second` (unsound) drops that A move instead, as a
+diagnostic.
+
+Cross-checks:
+- **Against a sound A-safe table.** Both sides with every legal opponent
+  move: B-win BIG at `t` 4, `tt` 4, `ot` 20 against A-safe BIG at `t` 20,
+  B Walker ≤ 7, `ott` 8, both K = 21. Of 11.5M shared positions, every one
+  where both are decided has B's line above A's for every n. That includes
+  104k BIG positions with β ≠ 0. At 2.4M positions the gap is exactly 1.
+- **Against the strict scalar B-win** (`ot` 13, same caps): no position
+  contradicts the A-safe table either.
+- **`TCB_BIGCHECK=1`** passes on the small configurations, and the debug build
+  passes too.
+
+Results, A first, B 6/6 with its moves filtered, `ott` 8, every legal A move
+(`TCB_FULLOPP=1`), strict, `lmax` 100:
+
+| `ot` (K) | rules | B wins with | positions | time, peak RSS |
+|---|---|---|---|---|
+| 20 | strict scalar | B life ≥ 24 | 77.0M | 3.2 min, 2.4 GB |
+| 20 (21) | BIG | B life ≥ 24 (c 24, β 0) | 76.9M | 4.5 min, 2.5 GB |
+| 24 (25) | BIG | B life ≥ 24 (c 24, β 0) | 101.2M | 5.8 min, 2.9 GB |
+| 20 (21) | BIG, second BIG dropped (unsound) | B life ≥ 24 | | |
+| 20 (21) | BIG, second BIG dropped and A's Thopters cut at `ott` (unsound) | B life ≥ 24 | | |
+| 4/4 B, 13 (14) | strict scalar / BIG | B life ≥ 25 / ≥ 25 | 19.4M | |
+
+So the strict 24 isn't the huge-Walker rule. Removing these doesn't move it:
+- huge events for the first Walker (BIG);
+- the second-BIG rule;
+- the cap on A's Thopters (unsound in B's favour).
+
+The relaxed 18 needed A's Walker to stop at its cap. Against an A whose
+Walker grows without bound, B needs 24 within these caps. That is the
+strongest evidence yet that B can't force a win from 20.
+
+The BIG table does win more positions than the strict one: at A life 20,
+3.23M of 3.85M bases are B wins against 3.02M. 836k positions need less or
+go from never to a finite need. Where it is worse (about 140k positions at
+A life 20), A's other Walker is mostly within 3 of K. That is the second-BIG
+rule, which is stricter than the strict rule's "a second huge Walker
+saturates". Keeping a second huge Walker under the strict rules (stored at
+K + 1) would fix those positions. It can't change the opening: dropping the
+second BIG, which only helps B, gives 24.
+
+The rule fires on 187,831 edges in 6,369 compiled turns, 0.17% of the 3.85M
+bases. The count is the same at `ot` 20 and 24: the states near two big
+Walkers are the same up to the size label.
