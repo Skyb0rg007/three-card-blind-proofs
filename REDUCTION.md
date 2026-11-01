@@ -396,6 +396,8 @@ The spot check passes in every run.
 | opening, A first | B-wins, B macro `blk,atk2,dmg`, A filtered | **B Walker 6**, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (77.2M positions, 6.6 min): the same as with B's Walker capped at 4. |
 | same | same | **B Walker 10**, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (112M positions, 11 min). A bigger B Walker doesn't help B going second; with A filtered this is optimistic for B, so with every legal A move B needs at least as much. |
 | opening, A first | B-wins, **every legal B move** (`TCB_FULLMINE=1`), A filtered | B Walker 4, tt 14, A huge > 14, ott 14 | **B wins with B life ≥ 25** (112M positions, 48 min): B's macro wasn't costing B anything. A is still filtered, which is optimistic for B, so B can't force a win from 20 within these caps. |
+| same | B-wins, B macro `blk,atk2,dmg`, A filtered | B Walker 4, tt 14, **A huge > 20**, ott 14 | **B wins with B life ≥ 25** (87M positions = 4.35M bases × 20, 6.6 min). |
+| same | same | **B Walker 6, tt 20, A huge > 20, ott 20** | **B wins with B life ≥ 24** (250M positions = 12.5M bases × 20, 78 min, 12 GB). The first change on B's side that moves B's threshold: more Thopters help B a little. Still above 20. |
 
 ¹ A active; A: life 10, one 3/3 Walker, 2 Thopters. B: life 6, one 1/1
 Walker, 2 Thopters, Elixir in hand.
@@ -410,9 +412,10 @@ hand.
 relaxed on A's side (caps, macro, filter, R4). Only B's filter is left, and
 lifting it can only lower the value. B's win stops at 25 under every change
 tried on B's side (caps 14 and 18, B's Walker capped at 4, 6 or 10, the
-macro and `atk2`). So the real thresholds are very likely A wins iff B life
-≤ 15 and B wins iff B life ≥ 25: from the real start, at B life 20,
-**neither player can force a win**. To prove it, the safety checks must
+macro and `atk2`) except raising both Thopter caps to 20, which brings it to
+24. So the real thresholds are very likely A wins iff B life ≤ 15 and B wins
+iff B life ≥ 24 or so: from the real start, at B life 20, **neither player
+can force a win**. To prove it, the safety checks must
 reach 20: A-safe with B life ≥ 20 (so B can't win) and B-safe with B life
 ≤ 20 (so A can't). The B half is done and certified: B-safe at B Walker 10,
 tt 10, with every legal A move, gives exactly 20. For A, capped Walkers and
