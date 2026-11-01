@@ -20,6 +20,9 @@ Definition player_eqb (p q : player) : bool :=
     battlefield from its controller's first turn. *)
 Inductive card := CWalker | CElixir.
 
+Definition card_eq_dec (x y : card) : {x = y} + {x <> y}.
+Proof. decide equality. Defined.
+
 (** ** Per-player state (RULES.md §3.1) *)
 
 Record walker := mkWalker {
@@ -81,6 +84,9 @@ Definition is_main (st : stepk) : bool :=
 (** A blocker of an attacking Walker: a defending Walker (by index into the
     defender's [bf]) or a Thopter. Thopters are interchangeable. *)
 Inductive blocker := BW (i : nat) | BT.
+
+Definition blocker_eq_dec (x y : blocker) : {x = y} + {x <> y}.
+Proof. decide equality. apply Nat.eq_dec. Defined.
 
 Record combat := mkCombat {
   atk : list nat;              (** indices of the attacking Walkers *)
@@ -180,35 +186,16 @@ Fixpoint update_nth {A} (n : nat) (f : A -> A) (l : list A) : list A :=
   | x :: xs, S n' => x :: update_nth n' f xs
   end.
 
-Definition sum (l : list nat) : nat := fold_right Nat.add 0 l.
-
-Fixpoint count_bt (l : list blocker) : nat :=
-  match l with
-  | [] => 0
-  | BT :: r => S (count_bt r)
-  | BW _ :: r => count_bt r
-  end.
-
-Definition opt_nat_eqb (o : option nat) (n : nat) : bool :=
-  match o with Some m => Nat.eqb m n | None => false end.
+(** [l]'s elements paired with their indices. *)
+Definition enum {A} (l : list A) : list (nat * A) := combine (seq 0 (length l)) l.
 
 (** Indices [i] of [l] with [f i (nth i l)] true, in increasing order. *)
 Definition indices_where {A} (f : nat -> A -> bool) (l : list A) : list nat :=
-  let fix go i l :=
-    match l with
-    | [] => []
-    | x :: r => if f i x then i :: go (S i) r else go (S i) r
-    end in
-  go 0 l.
+  map fst (filter (fun '(i, x) => f i x) (enum l)).
 
 (** Remove the elements whose index is in [dead]. *)
 Definition remove_indices {A} (dead : list nat) (l : list A) : list A :=
-  let fix go i l :=
-    match l with
-    | [] => []
-    | x :: r => if existsb (Nat.eqb i) dead then go (S i) r else x :: go (S i) r
-    end in
-  go 0 l.
+  map snd (filter (fun '(i, _) => negb (existsb (Nat.eqb i) dead)) (enum l)).
 
 Fixpoint subsets (l : list nat) : list (list nat) :=
   match l with
@@ -230,52 +217,26 @@ Fixpoint product {A} (choices : list (list A)) : list (list A) :=
   | c :: cs => let rs := product cs in flat_map (fun x => map (cons x) rs) c
   end.
 
-(** All merges of two lists that keep the order within each list. *)
-Fixpoint interleave {A} (xs ys : list A) : list (list A) :=
-  match xs with
-  | [] => [ys]
-  | x :: xs' =>
-      let fix go ys :=
-        match ys with
-        | [] => [xs]
-        | y :: ys' => map (cons x) (interleave xs' ys) ++ map (cons y) (go ys')
-        end in
-      go ys
-  end.
+Section Orders.
+Context {A : Type} (dec : forall x y : A, {x = y} + {x <> y}).
 
-Fixpoint insert_all {A} (x : A) (l : list A) : list (list A) :=
+Fixpoint remove_first (x : A) (l : list A) : list A :=
   match l with
-  | [] => [[x]]
-  | y :: r => (x :: l) :: map (cons y) (insert_all x r)
+  | [] => []
+  | y :: r => if dec x y then r else y :: remove_first x r
   end.
 
-Fixpoint permutations {A} (l : list A) : list (list A) :=
-  match l with
-  | [] => [[]]
-  | x :: r => flat_map (insert_all x) (permutations r)
+Fixpoint orders_fuel (fuel : nat) (l : list A) : list (list A) :=
+  match fuel, l with
+  | S f, _ :: _ => flat_map (fun x => map (cons x) (orders_fuel f (remove_first x l))) (nodup dec l)
+  | _, _ => [[]]
   end.
 
-(** Distinct orders of a set of distinct Walkers and [k] identical Thopters. *)
-Definition blocker_orders (l : list blocker) : list (list blocker) :=
-  let ws := filter (fun b => match b with BW _ => true | BT => false end) l in
-  flat_map (fun p => interleave p (repeat BT (count_bt l))) (permutations ws).
+(** The distinct orders of [l]'s elements: of a damage assignment order's
+    distinct Walkers and identical Thopters, or of a library's cards. *)
+Definition orders (l : list A) : list (list A) := orders_fuel (length l) l.
 
-(** Distinct orders of [nw] Walkers and [ne] Elixirs. *)
-Fixpoint arrangements_fuel (fuel nw ne : nat) : list (list card) :=
-  match fuel with
-  | 0 => [[]]
-  | S f =>
-      (if 0 <? nw then map (cons CWalker) (arrangements_fuel f (pred nw) ne) else [])
-      ++ (if 0 <? ne then map (cons CElixir) (arrangements_fuel f nw (pred ne)) else [])
-  end.
-
-Definition count_card (c : card) (l : list card) : nat :=
-  length (filter (fun d => match c, d with
-                           | CWalker, CWalker | CElixir, CElixir => true
-                           | _, _ => false end) l).
-
-Definition arrangements (l : list card) : list (list card) :=
-  arrangements_fuel (length l) (count_card CWalker l) (count_card CElixir l).
+End Orders.
 
 (** ** Mana (S4, S5) *)
 
@@ -325,13 +286,13 @@ Definition block_moves (s : state) : list move :=
     map (fun w => if w.(wtapped) then [None] else None :: map Some (seq 0 n)) d.(bf) in
   flat_map (fun wb =>
     flat_map (fun tb =>
-      let left := d.(thop_u) - sum tb in
+      let left := d.(thop_u) - list_sum tb in
       map (Block wb tb) (seq 0 (S (Nat.min left s.(cmb).(atk_thop)))))
       (bounded_vectors n d.(thop_u)))
     (product wchoices).
 
 Definition order_moves (s : state) : list move :=
-  map Order (product (map blocker_orders s.(cmb).(blk))).
+  map Order (product (map (orders blocker_eq_dec) s.(cmb).(blk))).
 
 Definition walker_power (sd : side) (i : nat) : nat :=
   match nth_error sd.(bf) i with Some w => w.(counters) | None => 0 end.
@@ -359,13 +320,13 @@ Definition kill_choices (p : nat) (ts : list nat) : list nat :=
     killed set, and the empty set when [p] can be spread without killing.
     A killed set is a bitmask over the blockers in [blk] order. *)
 Definition masked {X} (m : nat) (xs : list X) : list X :=
-  map snd (filter (fun '(i, _) => Nat.testbit m i) (combine (seq 0 (length xs)) xs)).
+  map snd (filter (fun '(i, _) => Nat.testbit m i) (enum xs)).
 
 Definition kill_sets_new (p : nat) (ts : list nat) : list nat :=
   match ts with
   | [] => [0]
   | _ =>
-      filter (fun m => if m =? 0 then p <=? sum (map pred ts) else sum (masked m ts) <=? p)
+      filter (fun m => if m =? 0 then p <=? list_sum (map pred ts) else list_sum (masked m ts) <=? p)
         (seq 0 (2 ^ length ts))
   end.
 
@@ -388,7 +349,7 @@ Definition moves_gen (nw : bool) (s : state) : list move :=
   | ChooseBlock => block_moves s
   | ChooseOrder => order_moves s
   | ChooseDamage => damage_moves nw s
-  | ChooseShuffle _ _ cards => map Arrange (arrangements cards)
+  | ChooseShuffle _ _ cards => map Arrange (orders card_eq_dec cards)
   | Over _ => []
   end.
 
@@ -490,7 +451,7 @@ Definition do_attack (ws : list nat) (k : nat) (s : state) : state :=
 Definition do_block (nw : bool) (wb : list (option nat)) (tb : list nat) (tr : nat) (s : state) : state :=
   let c := s.(cmb) in
   let blks :=
-    map (fun '(a, k) => map BW (indices_where (fun _ o => opt_nat_eqb o a) wb) ++ repeat BT k)
+    map (fun '(a, k) => map BW (indices_where (fun _ o => match o with Some b => b =? a | None => false end) wb) ++ repeat BT k)
         (combine (seq 0 (length c.(atk))) tb) in
   let c := mkCombat c.(atk) c.(atk_thop) blks tr in
   let s := set_cmb c s in
@@ -507,10 +468,8 @@ Definition do_order (os : list (list blocker)) (s : state) : state :=
 Definition bury (dead : list nat) (sd : side) : side :=
   let gone := map (walker_power sd) dead in
   set_gy_w (sd.(gy_w) + length dead)
-    (set_thop_u (sd.(thop_u) + sum gone)
+    (set_thop_u (sd.(thop_u) + list_sum gone)
       (set_bf (remove_indices dead sd.(bf)) sd)).
-
-Definition blocker_power (d : side) (b : blocker) : nat := blocker_toughness d b.
 
 (** Combat damage (§3.6, §3.7). [js] gives, per attacking Walker, how many of
     its blockers (a prefix of its damage assignment order) are killed. *)
@@ -523,7 +482,7 @@ Definition do_damage (nw : bool) (js : list nat) (s : state) : state :=
   let fights := combine (combine c.(atk) c.(blk)) js in
   (* damage to the defending player *)
   let unblocked :=
-    sum (map (fun '(i, bs, _) => match bs with [] => walker_power a i | _ => 0 end) fights)
+    list_sum (map (fun '(i, bs, _) => match bs with [] => walker_power a i | _ => 0 end) fights)
     + (c.(atk_thop) - c.(trades)) in
   (* attacking Walkers that die *)
   let a_dead :=
@@ -531,12 +490,12 @@ Definition do_damage (nw : bool) (js : list nat) (s : state) : state :=
       (filter (fun '(i, bs, _) =>
                  match bs with
                  | [] => false
-                 | _ => walker_power a i <=? sum (map (blocker_power d) bs)
+                 | _ => walker_power a i <=? list_sum (map (blocker_toughness d) bs)
                  end) fights) in
   (* blockers that die *)
   let killed := flat_map (fun '(_, bs, j) => if nw then masked j bs else firstn j bs) fights in
   let d_dead := flat_map (fun b => match b with BW i => [i] | BT => [] end) killed in
-  let d_thop_dead := count_bt killed + c.(trades) in
+  let d_thop_dead := count_occ blocker_eq_dec killed BT + c.(trades) in
   let a := bury a_dead (set_thop_t (a.(thop_t) - c.(trades)) a) in
   let d := bury d_dead (set_thop_u (d.(thop_u) - d_thop_dead) d) in
   let s := set_cmb no_combat (set_side dp d (set_side ap a s)) in

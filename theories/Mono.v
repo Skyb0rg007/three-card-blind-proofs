@@ -47,7 +47,7 @@ Ltac simpl_step :=
   cbv beta iota zeta delta [step step_gen bump bump_side more_thop map_side get_side set_side
     do_pump do_elixir do_cast_walker do_cast_elixir do_attack do_block do_order
     do_damage end_step next_turn empty_pools with_payment pay defender draw
-    opp andb orb negb player_eqb is_main walker_power blocker_power blocker_toughness
+    opp andb orb negb player_eqb is_main walker_power blocker_toughness
     untap_side bury set_life set_city set_pool set_hand_w set_hand_e set_bf
     set_elixir_bf set_thop_u set_thop_t set_library set_gy_w set_cmb set_pend
     winner Model.pend Model.active Model.first_turn Model.sideA Model.sideB

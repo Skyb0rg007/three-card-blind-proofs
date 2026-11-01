@@ -81,7 +81,7 @@ Definition huge_event (s : state) : bool :=
             is_huge a i &&
             match bs with
             | [] => true
-            | _ => H <=? sum (map (blocker_toughness d) bs)
+            | _ => H <=? list_sum (map (blocker_toughness d) bs)
             end) fights
       | PB =>
           existsb (fun '(i, bs) =>

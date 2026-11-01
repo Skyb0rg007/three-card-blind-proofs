@@ -24,9 +24,11 @@ Lemma indices_where_rel : forall {A B} (P : A -> B -> Prop) (f : nat -> A -> boo
   Forall2 P l l' -> (forall i x y, P x y -> f i x = g i y) ->
   indices_where f l = indices_where g l'.
 Proof.
-  intros A B P f g l l' HP Hfg. unfold indices_where. generalize 0.
+  intros A B P f g l l' HP Hfg. unfold indices_where, enum.
+  rewrite <- (Forall2_length HP). generalize 0.
   induction HP as [| x y l l' Hxy HP IH]; intros i; [reflexivity |].
-  rewrite (Hfg i x y Hxy). destruct (g i y); f_equal; apply IH.
+  cbn [length seq combine filter]. rewrite (Hfg i x y Hxy).
+  destruct (g i y); cbn [map]; [f_equal |]; apply IH.
 Qed.
 
 Lemma ready_rel : forall l l', Forall2 walker_rel l l' ->
@@ -45,22 +47,22 @@ Qed.
 
 (** ** Damage choices *)
 
-Lemma max_prefix_all : forall ts p, sum ts <= p -> max_prefix p ts = length ts.
+Lemma max_prefix_all : forall ts p, list_sum ts <= p -> max_prefix p ts = length ts.
 Proof.
   induction ts as [| t ts IH]; intros p Hs; [reflexivity |].
-  cbn [max_prefix length]. unfold sum in *; cbn [fold_right] in Hs.
+  cbn [max_prefix length]. unfold list_sum in *; cbn [fold_right] in Hs.
   destruct (Nat.leb_spec t p); [| lia]. f_equal. apply IH. lia.
 Qed.
 
 (** An attacker's choices don't depend on its power once it can kill all
     its blockers. *)
-Lemma kill_choices_big : forall p p' ts, ts <> [] -> sum ts < p -> sum ts < p' ->
+Lemma kill_choices_big : forall p p' ts, ts <> [] -> list_sum ts < p -> list_sum ts < p' ->
   kill_choices p ts = kill_choices p' ts.
 Proof.
   intros p p' [| t ts] Hne Hp Hp'; [congruence |]. unfold kill_choices.
-  unfold sum in *; cbn [fold_right] in *.
+  unfold list_sum in *; cbn [fold_right] in *.
   destruct (Nat.ltb_spec p t), (Nat.ltb_spec p' t); try lia.
-  rewrite !max_prefix_all; unfold sum; cbn [fold_right]; [reflexivity | lia | lia].
+  rewrite !max_prefix_all; unfold list_sum; cbn [fold_right]; [reflexivity | lia | lia].
 Qed.
 
 (** Nor on the exact toughness of blockers too big for it to kill. *)
@@ -311,9 +313,10 @@ Qed.
 Lemma F2_remove : forall dead l l', Forall2 walker_rel l l' ->
   Forall2 walker_rel (remove_indices dead l) (remove_indices dead l').
 Proof.
-  intros dead l l' Hl. unfold remove_indices. generalize 0.
-  induction Hl as [| x y l l' Hxy Hl IH]; intros i; cbn; [constructor |].
-  destruct (existsb (Nat.eqb i) dead); [apply IH | constructor; [exact Hxy | apply IH]].
+  intros dead l l' Hl. unfold remove_indices, enum.
+  rewrite <- (Forall2_length Hl). generalize 0.
+  induction Hl as [| x y l l' Hxy Hl IH]; intros i; cbn [length seq combine filter map]; [constructor |].
+  destruct (existsb (Nat.eqb i) dead); cbn [negb map]; [apply IH | constructor; [exact Hxy | apply IH]].
 Qed.
 
 Lemma F2_snoc : forall l l' w, Forall2 walker_rel l l' -> Forall2 walker_rel (l ++ [w]) (l' ++ [w]).
@@ -405,7 +408,7 @@ Lemma sa_bury : forall dead a a', sideA_rel H a a' ->
   sideA_rel H (bury dead a) (bury dead a').
 Proof.
   intros dead a a' HA Hd. pose proof (sa_bf _ _ HA) as Hb.
-  assert (Es : sum (map (walker_power a) dead) = sum (map (walker_power a') dead))
+  assert (Es : list_sum (map (walker_power a) dead) = list_sum (map (walker_power a') dead))
     by (f_equal; apply map_ext_in; exact Hd).
   unfold bury. rewrite Es. clear Es Hd.
   destruct a, a'. unfold set_gy_w, set_thop_u, set_bf. sa_solve HA. apply F2_remove. exact Hb.
@@ -558,7 +561,7 @@ Qed.
 Definition fights_of (c : combat) (js : list nat) := combine (combine c.(atk) c.(blk)) js.
 
 Definition unblocked_of (a : side) (c : combat) (fs : list (nat * list blocker * nat)) : nat :=
-  sum (map (fun '(i, bs, _) => match bs with [] => walker_power a i | _ => 0 end) fs)
+  list_sum (map (fun '(i, bs, _) => match bs with [] => walker_power a i | _ => 0 end) fs)
   + (c.(atk_thop) - c.(trades)).
 
 Definition adead_of (a d : side) (fs : list (nat * list blocker * nat)) : list nat :=
@@ -566,7 +569,7 @@ Definition adead_of (a d : side) (fs : list (nat * list blocker * nat)) : list n
     (filter (fun '(i, bs, _) =>
                match bs with
                | [] => false
-               | _ => walker_power a i <=? sum (map (blocker_power d) bs)
+               | _ => walker_power a i <=? list_sum (map (blocker_toughness d) bs)
                end) fs).
 
 Definition killed_of (fs : list (nat * list blocker * nat)) : list blocker :=
@@ -582,7 +585,7 @@ Definition damage_alt (js : list nat) (s : state) : state :=
   let unblocked := unblocked_of a c fs in
   let killed := killed_of fs in
   let d_dead := flat_map (fun b => match b with BW i => [i] | BT => [] end) killed in
-  let d_thop_dead := count_bt killed + c.(trades) in
+  let d_thop_dead := count_occ blocker_eq_dec killed BT + c.(trades) in
   let a := bury (adead_of a d fs) (set_thop_t (a.(thop_t) - c.(trades)) a) in
   let d := bury d_dead (set_thop_u (d.(thop_u) - d_thop_dead) d) in
   let s := set_cmb no_combat (set_side dp d (set_side ap a s)) in
@@ -599,14 +602,14 @@ Proof. intros a a' i Hb Hl. destruct (walker_power_rel a a' i Hb) as [E | (Hp & 
 
 Lemma huge_A_false : forall a d l,
   existsb (fun '(i, bs) => is_huge H a i &&
-             match bs with [] => true | _ => H <=? sum (map (blocker_toughness d) bs) end) l = false ->
+             match bs with [] => true | _ => H <=? list_sum (map (blocker_toughness d) bs) end) l = false ->
   forall i bs, In (i, bs) l -> H <= walker_power a i ->
-  bs <> [] /\ sum (map (blocker_toughness d) bs) < H.
+  bs <> [] /\ list_sum (map (blocker_toughness d) bs) < H.
 Proof.
   intros a d l Hx i bs Hin Hge.
-  destruct (is_huge H a i && match bs with [] => true | _ => H <=? sum (map (blocker_toughness d) bs) end) eqn:Ev.
+  destruct (is_huge H a i && match bs with [] => true | _ => H <=? list_sum (map (blocker_toughness d) bs) end) eqn:Ev.
   - exfalso. assert (Ht : existsb (fun '(i, bs) => is_huge H a i &&
-             match bs with [] => true | _ => H <=? sum (map (blocker_toughness d) bs) end) l = true).
+             match bs with [] => true | _ => H <=? list_sum (map (blocker_toughness d) bs) end) l = true).
     { apply existsb_exists. exists (i, bs). split; assumption. }
     congruence.
   - unfold is_huge in Ev. rewrite (proj2 (Nat.leb_le _ _) Hge) in Ev. cbn [andb] in Ev.
@@ -628,10 +631,10 @@ Proof.
   congruence.
 Qed.
 
-Lemma in_le_sum : forall x l, In x l -> x <= sum l.
+Lemma in_le_sum : forall x l, In x l -> x <= list_sum l.
 Proof.
   intros x l. induction l as [| y l IH]; intros Hin; [destruct Hin |].
-  unfold sum in *; cbn [fold_right]. destruct Hin as [<- | Hin]; [lia | specialize (IH Hin); lia].
+  unfold list_sum in *; cbn [fold_right]. destruct Hin as [<- | Hin]; [lia | specialize (IH Hin); lia].
 Qed.
 
 Lemma in_firstn : forall {X} n (x : X) l, In x (firstn n l) -> In x l.
@@ -639,14 +642,14 @@ Proof.
   intros X n x l Hin. rewrite <- (firstn_skipn n l). apply in_or_app. left. exact Hin.
 Qed.
 
-Lemma max_prefix_bound : forall ts p j, j <= max_prefix p ts -> sum (firstn j ts) <= p.
+Lemma max_prefix_bound : forall ts p j, j <= max_prefix p ts -> list_sum (firstn j ts) <= p.
 Proof.
-  induction ts as [| t ts IH]; intros p [| j] Hj; cbn [firstn]; unfold sum in *; cbn [fold_right]; try lia.
+  induction ts as [| t ts IH]; intros p [| j] Hj; cbn [firstn]; unfold list_sum in *; cbn [fold_right]; try lia.
   cbn [max_prefix] in Hj. destruct (Nat.leb_spec t p); [| lia].
-  specialize (IH (p - t) j ltac:(lia)). unfold sum in IH. lia.
+  specialize (IH (p - t) j ltac:(lia)). unfold list_sum in IH. lia.
 Qed.
 
-Lemma kill_bound : forall p ts j, In j (kill_choices p ts) -> sum (firstn j ts) <= p.
+Lemma kill_bound : forall p ts j, In j (kill_choices p ts) -> list_sum (firstn j ts) <= p.
 Proof.
   intros p [| t ts] j Hin; unfold kill_choices in Hin.
   - destruct Hin as [<- | []]. cbn. lia.
@@ -699,7 +702,7 @@ Proof.
       destruct (Nat.lt_ge_cases (walker_power a i') H) as [Hl | Hg]; [exact Hl | exfalso].
       unfold fights_of in Hf. apply in_combine_l in Hf.
       destruct (huge_A_false _ _ _ Hh i' _ Hf Hg) as [_ Hs].
-      apply Nat.leb_le in Hk. change (blocker_power b) with (blocker_toughness b) in Hk. lia. }
+      apply Nat.leb_le in Hk.  lia. }
     assert (Ed : adead_of a' b (fights_of c js) = adead_of a b (fights_of c js)).
     { unfold adead_of. f_equal. apply filter_ext_in. intros [[i bs] j] Hf.
       destruct bs as [| x bs]; [reflexivity |].
@@ -708,8 +711,8 @@ Proof.
       unfold fights_of in Hf. apply in_combine_l in Hf.
       destruct (huge_A_false _ _ _ Hh i _ Hf Hg) as [_ Hs].
       destruct (walker_power_rel a a' i Hbf) as [E | (_ & Hg')]; [rewrite E; reflexivity |].
-      change (blocker_power b) with (blocker_toughness b). destruct (Nat.leb_spec (walker_power a i) (sum (map (blocker_toughness b) (x :: bs))));
-        destruct (Nat.leb_spec (walker_power a' i) (sum (map (blocker_toughness b) (x :: bs)))); lia. }
+      destruct (Nat.leb_spec (walker_power a i) (list_sum (map (blocker_toughness b) (x :: bs))));
+        destruct (Nat.leb_spec (walker_power a' i) (list_sum (map (blocker_toughness b) (x :: bs)))); lia. }
     rewrite <- Eu, Ed.
     destruct (_ <=? _); apply RA_set_pend; try exact I; try apply RA_mapB;
       apply RA_set_cmb; apply RA_setB; (apply RA_setA; [| apply RA_intro; [exact I | exact HA]]);
@@ -724,14 +727,14 @@ Proof.
       - apply existsb_exists in Ex as [[j0 |] [Hj0 Hx]]; [| discriminate].
         unfold is_huge in Hx. apply Nat.leb_le in Hx.
         pose proof (huge_B_false _ _ _ Hh i _ j0 Hf Hj0 Hx) as Hl.
-        assert (Hs : forall d, H <= walker_power d j0 -> walker_power b i <=? sum (map (blocker_power d) (x :: bs)) = true).
+        assert (Hs : forall d, H <= walker_power d j0 -> walker_power b i <=? list_sum (map (blocker_toughness d) (x :: bs)) = true).
         { intros d Hd. apply Nat.leb_le.
-          pose proof (in_le_sum (blocker_power d (BW j0)) (map (blocker_power d) (x :: bs)) (in_map _ _ _ Hj0)) as Hle.
-          cbn [blocker_power blocker_toughness] in Hle. lia. }
+          pose proof (in_le_sum (blocker_toughness d (BW j0)) (map (blocker_toughness d) (x :: bs)) (in_map _ _ _ Hj0)) as Hle.
+          cbn [blocker_toughness] in Hle. lia. }
         rewrite !Hs; [reflexivity | exact Hx |].
         destruct (walker_power_rel a a' j0 Hbf) as [E | (_ & Hg')]; [rewrite <- E; exact Hx | exact Hg'].
       - f_equal. f_equal. apply map_ext_in. intros [j0 |] Hj0; [| reflexivity].
-        cbn [blocker_power blocker_toughness]. symmetry. apply nonhuge_eq; [exact Hbf |].
+        cbn [blocker_toughness]. symmetry. apply nonhuge_eq; [exact Hbf |].
         destruct (Nat.lt_ge_cases (walker_power a j0) H) as [Hl | Hg]; [exact Hl | exfalso].
         assert (Ht : existsb (fun b0 => match b0 with BW j => is_huge H a j | BT => false end) (x :: bs) = true).
         { apply existsb_exists. exists (BW j0). split; [exact Hj0 | apply Nat.leb_le; exact Hg]. }
