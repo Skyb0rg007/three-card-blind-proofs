@@ -554,6 +554,8 @@ The B-win side, same B (Walker 6, Thopters 8, B's moves filtered), A first:
 | filtered | 32 | 12 | strict | B life ≥ 24 |
 | filtered, B Walker 6, B Thopters 6 | 40 | 8 | strict | B life ≥ 24 (84M positions, 5.5 min, 3 GB) |
 | filtered, B Walker 6, B Thopters 6 | 64 | 8 | strict | B life ≥ 24 (176M positions, 9.3 min, 6.4 GB) |
+| filtered, B Walker 9, B Thopters 9 | 32 | 8 | strict | B life ≥ 24 (140M positions, 11 min, 9 GB) |
+| filtered, B Walker 12, B Thopters 12 | 32 | 8 | strict | B life ≥ 24 (269M positions, 49 min, 12.8 GB) |
 
 The whole gap between 18 and 24 is the huge-Walker rule: in the strict check,
 an A Walker past `ot` that attacks unblocked or fights a big block is a loss
@@ -619,3 +621,14 @@ unbounded growths: B's material and life against A's Walker sizes and A's
 pressure on B's mana (an A Walker attacking every turn forces B to spend
 mana on chump blockers). That race is what a symbolic invariant has to
 capture.
+
+**Raising B's caps doesn't help B.** Strict B-win at `ot` 32, `ott` 8, with B's
+Walker and Thopter caps raised together from 6 to 9 to 12, needs B life ≥ 24
+each time (table above). Across every cap tried on either side (A's Walkers
+24–64, A's Thopters 8–24, B's material 6–12), B's strict threshold is 24. If
+B's material growth outran A's Walkers, larger B caps would lower it. They
+don't, which is further evidence for the A-safe hypothesis. Reading B's
+fixstats wins at 8+ material: those are positions where B already holds that
+material against A's current Walkers, and B can't reach them from the start
+while A keeps growing.
+
