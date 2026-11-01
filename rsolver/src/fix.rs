@@ -333,8 +333,15 @@ pub fn lmin(a: Line, b: Line) -> Line {
 /// A's nodes: one of the two, the larger at n = r (ties by c, then b, so
 /// that this is the max of a total order: associative and commutative).
 /// Either choice is a lower bound on the max.
+///
+/// With r < 0 (`TCB_LAX=adapt`, an unsound diagnostic) it is the
+/// componentwise max instead: as if A could choose a different move for
+/// every n. That is optimistic for A (above the pointwise max).
 #[inline]
 pub fn lpick(r: i64, a: Line, b: Line) -> Line {
+    if r < 0 {
+        return lmaxc(a, b);
+    }
     if a.c >= INF || b.c >= INF {
         LINF
     } else if a.c <= NINF {
@@ -587,7 +594,7 @@ pub fn eval_turn(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> i64, s: &State) -> i6
     eval_go(c, lookup, &mut local, s, true)
 }
 
-fn eval_go(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> i64, local: &mut HashMap<State, i64>, s: &State, root: bool) -> i64 {
+pub fn eval_go(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> i64, local: &mut HashMap<State, i64>, s: &State, root: bool) -> i64 {
     match winner(s) {
         Some(Player::B) => return NINF,
         Some(Player::A) => panic!("A cannot win inside the abstraction"),
@@ -632,7 +639,7 @@ pub fn eval_turn_big(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> Line, s: &State) 
     eval_go_big(c, lookup, &mut local, s, true)
 }
 
-fn eval_go_big(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> Line, local: &mut HashMap<State, Line>, s: &State, root: bool) -> Line {
+pub fn eval_go_big(c: &Cfg, lookup: &mut dyn FnMut(&[u8]) -> Line, local: &mut HashMap<State, Line>, s: &State, root: bool) -> Line {
     match winner(s) {
         Some(Player::B) => return LNINF,
         Some(Player::A) => panic!("A cannot win inside the abstraction"),

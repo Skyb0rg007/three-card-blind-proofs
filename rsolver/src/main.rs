@@ -5,11 +5,16 @@
 //!                                     variables (no ranks, lines or warm starts yet);
 //!                                     with TCB_BIG=1 (`fix safe A` only), one A Walker
 //!                                     is unbounded (fix::Line)
+//!   trace DIR A|B T TT LMAX STARTER L... follow a saved table's deciding play
+//!                                     from the start at B life L and tally its
+//!                                     leaves by rule (trace.rs); the same TCB_*
+//!                                     variables as the solve
 mod fix;
 mod model;
 mod progstat;
 mod reduce;
 mod solver;
+mod trace;
 mod walk;
 
 #[global_allocator]
@@ -73,7 +78,13 @@ fn cfg_from_env(prot: Player, t: u32, tt: u32, lmax: i64) -> Cfg {
         brules: brules.clone(),
         lax: std::env::var("TCB_LAX").map(|l| l.split(',').map(String::from).collect()).unwrap_or_default(),
         big: env_flag("TCB_BIG"),
-        bigref: env_int("TCB_BIGREF", 20) as i64,
+        // TCB_LAX=adapt (A-safe BIG, unsound): A's nodes take the
+        // componentwise max of lines (`fix::lpick` with r < 0)
+        bigref: if prot == Player::A && std::env::var("TCB_LAX").is_ok_and(|l| l.split(',').any(|x| x == "adapt")) {
+            -1
+        } else {
+            env_int("TCB_BIGREF", 20) as i64
+        },
         bigcheck: env_flag("TCB_BIGCHECK"),
     }
 }
@@ -101,6 +112,9 @@ fn big_cmd(c: &Cfg, starter: &str) {
     if c.prot == Player::B && std::env::var("TCB_RANKS").ok().as_deref() == Some("1") {
         eprintln!("TCB_BIG=1 doesn't keep ranks");
         std::process::exit(2);
+    }
+    if !c.strict("adapt") {
+        println!("warning: TCB_LAX=adapt: A's nodes take the componentwise max of lines (A chooses per n); optimistic for A, not sound");
     }
     if !c.strict("dmg") || !c.strict("die") || !c.strict("many") {
         println!("warning: TCB_LAX is set, so the opponent's caps are relaxed and the result is not sound");
@@ -217,6 +231,10 @@ fn main() {
         [_, "walk", seed, steps] => walk::run(seed.parse().unwrap(), steps.parse().unwrap(), false),
         [_, "walk", seed, steps, "bias"] => walk::run(seed.parse().unwrap(), steps.parse().unwrap(), true),
         [_, "fix", mode, who, t, tt, lmax, starter] => fix_cmd(mode, who, t, tt, lmax, starter),
+        [_, "trace", dir, who, t, tt, lmax, starter, lives @ ..] if !lives.is_empty() => {
+            let c = cfg_from_env(pl(who), t.parse().unwrap(), tt.parse().unwrap(), lmax.parse().unwrap());
+            trace::run(&c, dir, pl(starter), &lives.iter().map(|l| l.parse().unwrap()).collect::<Vec<i64>>())
+        }
         [_, "progstats-table", dir, who, t, tt, every] => {
             let c = cfg_from_env(pl(who), t.parse().unwrap(), tt.parse().unwrap(), 100);
             progstat::run_table(&c, dir, every.parse().unwrap())

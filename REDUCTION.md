@@ -875,3 +875,115 @@ positions read such positions, or lose to the single-line choice.
 The rule fires on 187,831 edges in 6,369 compiled turns, 0.17% of the 3.85M
 bases. The count is the same at `ot` 20 and 24: the states near two big
 Walkers are the same up to the size label.
+
+## Where the A-first gap comes from (`rsolver trace`)
+
+A-safe stops at B life 15–16 and the B win at 24–25 under every single
+change tried. `rsolver trace DIR A|B T TT LMAX STARTER L...` (with the
+solve's `TCB_*` variables) follows a saved table's deciding play from the
+opening at B life L and tallies the leaves by the rule that decided them.
+- **A-safe table** (solved with `TCB_RANKS=1`): B's win against every A move.
+  A turn lost in round r is followed only into turn starts of its level lost
+  by round r − 1, or into lower levels, so every branch ends at a leaf. A
+  child is traced at the least B life it was lost with by then.
+- **B-win table**: A's escape against every B move, stopping at turn starts
+  already seen. With `TCB_BIG=1` it keeps BIG's exact n and searches each
+  turn per n, so an escape that only the line arithmetic gives shows up as
+  "not confirmed".
+
+Where the traced side has several good moves, it takes the one needing the
+fewest abstraction rules in this turn, then the fastest win. A huge event in
+which the protagonist dies anyway at the representative size counts as a
+real death. `TCB_TRACE_PV=1` follows only the protagonist's best replies by
+the table's own values. `TCB_CMP_DIR`/`TCB_CMP_CFG` compare an A-safe trace
+with a B-win table, position by position. The trace only reads tables.
+
+Small tables, A first, `lmax` 100:
+
+| table | start | traced at | turn starts | leaves |
+|---|---|---|---|---|
+| A-safe, macro, `t` 12, `tt` 8, B huge > 10, `ott` 8 | A safe ≤ 15 | B life 16, every A move | 1.09M (all) | A dead 261k (in 164k turns); too_many 85k (21k turns); huge: unblocked 1.0k, huge attacker blocked by ≥ `ot`+1 2.6k, huge blocker 1.3k; lmax 0. A cap removed a pump at 102k A nodes |
+| same | | B life 16, A's best replies | 261 | only A dead (141). No cap, no abstraction rule |
+| B-win strict, B 4/4, A huge > 13, `ott` 8, every A move | B ≥ 25 | B life 20, every B move | 6.0M (cut off) | B dead 535k (267k turns); huge unblocked 657k (451k turns); lmax 16k |
+| same | | B life 20–23, B's best replies | 4–20k | huge unblocked in 17–20% of turns; at 24 none |
+| B-win BIG, same caps | B ≥ 25 | B life 24, every B move | 8.0M (cut off) | B dead 2.8M (1.4M turns); F_SECOND 22k (0.3%); no too_many, no lmax, no n bound. Every traced turn confirmed per n |
+| same | | B life 20, 24, B's best replies | 150–220 | only B dead |
+
+Example lines, ends only (B's life is the least it needs from there):
+- A-safe, huge unblocked: B's Walker reaches 11 (`ot` + 1) and hits A from 18
+  to 7. A survives the real hit, but the rule counts it as a loss.
+- A-safe, too_many: A's 5 attacks, B blocks with its 1/1 and pumps it. The
+  Walker dies, and B's Thopters go from 7 to 9.
+- B-win strict, huge unblocked: A on 1 life, its Walker grown 10 → 14 one
+  counter a turn. B Elixirs from 10 to 15, and A's 14 leaves B on 1. B
+  survives the real hit, but the rule calls it a B loss.
+- B-win BIG, F_SECOND: A on 4 life with Walkers 13 and K+0 pumps the 13.
+
+**Comparing the two tables.** The B-win BIG table at B 4/4 against the
+A-safe trace above: of the 1.09M traced turn starts, the B-win table agrees
+B wins at 416k, says A escapes at 245k, and lacks 426k (B beyond 4/4).
+There are 11,321 frontier turns: the B-win table disagrees there, but on
+none of the traced children. At 9,033 of them a child is outside the B-win's
+B caps. At the other 2,288, A escapes in the B-win table by attacking with
+only some of its Thopters, which A's macro forbids.
+
+**Targeted solves**, each matching one more rule between the two sides (B's
+caps imposed on A-safe with `TCB_LAX=dmg,die,many`):
+
+| A-safe variant | A safe with | B-win counterpart |
+|---|---|---|
+| B ≤ 4/4, A `t` 13 capped, `TCB_AMACRO=pump,order,dmg` | B life ≤ 20 | |
+| same, A BIG (`t` 20) | ≤ 20 | |
+| same, A BIG, every legal A move | ≤ 20 | BIG, B 4/4: B ≥ 25 (also with `TCB_LAX=second`) |
+| B ≤ 4/4, A capped at 14, every legal A move | ≤ 20 | B 4/4, A silently capped at 14 (`TCB_LAX=dmg,die,many`): **B ≥ 21** |
+| B ≤ 4/4, A BIG, **`TCB_LAX=adapt`** | **≤ 24** | BIG, B 4/4: B ≥ 25 |
+| B ≤ 6/6, A BIG, `adapt` | **≤ 23** | BIG, B 6/6: B ≥ 24 |
+| B ≤ 8/8, A BIG, `adapt` | ≤ 23 | |
+
+`TCB_LAX=adapt` (new, unsound, A-safe BIG only) makes A's nodes take the
+componentwise max of lines instead of one line. That is as if A could pick a
+different move for every n, and it is optimistic for A.
+
+**What binds: A-safe's treatment of A's growing Walker.**
+- **The rule sets match.** With identical rules on both sides (B ≤ 4/4, A
+  capped at 14, every legal A move), A-safe and B-win are complementary:
+  20 and 21 at the opening. Position by position over all 19.4M, 0
+  inconsistencies. 13.75M positions are exactly complementary. Every gap is
+  at the lmax end: 257k positions where A is safe to 94–99 and B never wins,
+  plus 28k gaps of 1–6.
+- **Each solver reproduces the other.** Imposing B-win's caps on A-safe
+  takes it from 15 to 20. A BIG Walker and every legal A move add nothing.
+  Letting A choose per n closes the rest exactly: 24 against 25 at B 4/4,
+  23 against 24 at B 6/6. More B material (8/8) doesn't lower it.
+- **A-safe's abstraction holds A back.** In the capped A-safe, B wins
+  honestly against A's best attacking lines (the best-reply trace has only
+  real deaths). Against the lines where A keeps growing, it waits for A's cap
+  (102k cap-stopped A nodes). BIG removes the cap, but A must still commit to
+  one move for every n, and that costs as much.
+- **The B win holds no matter how A's Walker is treated.** In the strict
+  scalar table, A's escapes lean on the huge rule (a Walker of exactly
+  `ot` + 1 is treated as unbounded). The BIG table gives the same 25 without
+  that rule, and its escape is real: B dies or the game cycles, confirmed
+  per n at every traced turn. Its only abstraction leaf is F_SECOND, and
+  dropping that leaves 25.
+- **B's caps and A's attack macro are a second, smaller difference.** On
+  the main configurations, A-safe's B (Walker to 14, 8 Thopters) is stronger
+  than B-win's 6/6, and A-safe's A macro is weaker. Neither moves a
+  threshold here: B 8/8 gives 23 like 6/6 under `adapt`, and every legal A
+  move gives 20 like the macro.
+
+So within caps B ≤ 6–8, the A-first threshold is very likely "B wins iff B
+life ≥ 24". A sound A-safe check needs A's choice to depend on n: a union of
+lines per position, or a piecewise choice. The runs here show that this is
+the missing piece, not B's caps or any R4 rule.
+
+No sign of a solver bug: the traces found no stored value that the model
+search failed to confirm (scalar or BIG), and the matched-rule pair is
+complementary everywhere. One thing to know: **the BIG B-win table isn't
+deterministic.** Two runs of the same B 4/4 BIG solve, with the same binary
+from before this change, differ at 8,411 of 19.4M positions, and a third run
+at 21,514. The start value is 25 each time. Its iteration keeps a new line
+only if it is smaller in B's order, which isn't a lattice join, so which
+sound fixed point it reaches depends on thread timing. Each table is still
+sound by the induction-on-time argument above. Scalar tables, and the walk,
+are byte-identical with the new binary.
