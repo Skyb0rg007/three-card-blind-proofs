@@ -657,3 +657,17 @@ round) outruns an A that never stops growing (2 counters a round between its
 Walkers, less while attacking) is what the real game turns on, and no fixed
 cap answers it: strict gives 24 and relaxed 18 at every cap tried.
 
+`main win-reach DIR A LIFE` collects every record a ranked B win reaches
+from the opening with A given all its (table) moves; `main win-line DIR A
+LIFE N` prints one line (TCB_LAX=1 for tables solved relaxed, where A's
+Walkers then keep their real sizes). On the relaxed `ot` 40, `lmax` 200
+table, B's win from 18 reaches 7.39M records; in them A's Walkers reach the
+clamp (41) and B needs up to 200 life, the cap itself. With `lmax` 100 the
+opening needs 24, so A can force every B strategy to bank past 100 life,
+which takes over 30 rounds of Elixir, and A's Walkers grow into the clamp
+meanwhile. B's relaxed wins therefore wait out A's cap: against an A that
+keeps growing, the relaxed rules give no evidence of a B win, and the strict
+24 stands. This supports the A-safe hypothesis again. (A line where A only
+grows, or only delays B's records, is short: B wins in about 25 rounds with
+two Thopters in the air, so A's defence needs pressure as well as growth.)
+

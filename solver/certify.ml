@@ -507,6 +507,169 @@ let win_depth dir starter =
   done;
   Printf.printf "sum: %d turn starts\n" !total
 
+(* A line of B's ranked win from the opening with B on [life]: B takes the
+   move reaching the earliest next record, A the one delaying it most.
+   TCB_LAX=1 drops the huge rule, for tables solved with TCB_LAX=dmg,die;
+   then A's Walkers keep their real sizes, so the line stops where B's lax
+   win relied on a huge A Walker hitting for only [h]. TCB_AGROW=1 makes A
+   maximise its Walkers' total counters at the next turn start instead, and
+   TCB_ANEED=1 maximise the life the next record needs. *)
+let win_line dir starter life nturns =
+  let w = open_win dir in
+  let t = w.wt in
+  let lax = Sys.getenv_opt "TCB_LAX" <> None in
+  let grow = Sys.getenv_opt "TCB_AGROW" = Some "1" in
+  let need = Sys.getenv_opt "TCB_ANEED" = Some "1" in
+  let size s v =
+    if grow then list_sum (List.map (fun wk -> wk.counters) s.sideA.bf) else if need then v else 0 in
+  (* A gets only the filter's moves if the table was solved that way *)
+  let a_moves = if List.assoc_opt "fullopp" (Fix.read_meta dir) = Some "1" then moves else Reduce.moves in
+  let moves s = if to_move s = PA then a_moves s else moves s in
+  let lk k r = match index t k with Some i -> record w i r | None -> None in
+  let below k r = match index t k with Some i -> below_rec w i r | None -> None in
+  let s0 = init starter in
+  let s0 = { s0 with sideB = { s0.sideB with life } } in
+  let i0 = Option.get (index t (key t.h t.tt s0)) in
+  let a, b = recs w i0 in
+  let rec first p = if p >= b then None else if rval w p <= life then Some (rank w i0 p) else first (p + 1) in
+  match first a with
+  | None -> Printf.printf "B has no win from the opening on %d life\n" life
+  | Some r0 ->
+    let memo = H.create 1024 in
+    (* the rank of the next turn start's record under best play, -1 if B
+       wins this turn, None if B's win fails *)
+    let rec far r root s =
+      match winner s with
+      | Some PB -> Some (-1, 0)
+      | Some PA -> None
+      | None ->
+        if (not root) && is_turn_start s then
+          let k = key t.h t.tt s in
+          match below k r with
+          | Some r' ->
+            (match lk k r' with Some v when v <= s.sideB.life -> Some (r', size s v) | _ -> None)
+          | None -> None
+        else if (not lax) && huge_event t.h s then None
+        else
+          match H.find_opt memo s with
+          | Some x -> x
+          | None ->
+            let rs = List.map (fun m -> (m, next r s m)) (moves s) in
+            let x = pick (to_move s) rs |> Option.map snd in
+            H.replace memo s x;
+            x
+    and next r s m =
+      let s' = step s m in
+      if too_many t.ott s' then None else far r false s'
+    and pick p rs =
+      let ok = List.filter_map (fun (m, x) -> Option.map (fun v -> (m, v)) x) rs in
+      match p with
+      | PB -> List.fold_left (fun acc (m, v) -> match acc with Some (_, v') when fst v' <= fst v -> acc | _ -> Some (m, v)) None ok
+      | PA ->
+        let sw (r, z) = (z, r) in
+        if List.length ok < List.length rs then None
+        else List.fold_left (fun acc (m, v) -> match acc with Some (_, v') when sw v' >= sw v -> acc | _ -> Some (m, v)) None ok
+    in
+    let rec turn n r s =
+      if n < nturns then begin
+        Printf.printf "--- turn %d (record level %d, round %d) ---\n%s\n" n (r / level + 1) (r mod level) (Show.state s);
+        H.reset memo;
+        let rec play s root =
+          if (not root) && (winner s <> None || is_turn_start s) then Some s
+          else
+            let rs = List.map (fun m -> (m, next r s m)) (moves s) in
+            match pick (to_move s) rs with
+            | None -> None
+            | Some (m, _) ->
+              if m <> Pass then Printf.printf "  %s: %s\n" (Show.player (to_move s)) (Show.move m);
+              play (step s m) false
+        in
+        match play s true with
+        | None -> Printf.printf "B's win breaks here (real sizes)\n"
+        | Some s' ->
+          match winner s' with
+          | Some p -> Printf.printf "%s wins\n%s\n" (Show.player p) (Show.state s')
+          | None ->
+            let k = key t.h t.tt s' in
+            turn (n + 1) (Option.get (below k r)) s'
+      end
+    in
+    turn 0 r0 s0
+
+(* The records B's ranked win from the opening (B on [life]) reaches, with
+   A given every move the table gave it: how many, the most life one needs,
+   and A's largest Walker in them. TCB_LAX=1 as for [win_line]. *)
+let win_reach dir starter life =
+  let w = open_win dir in
+  let t = w.wt in
+  let lax = Sys.getenv_opt "TCB_LAX" <> None in
+  let a_moves = if List.assoc_opt "fullopp" (Fix.read_meta dir) = Some "1" then moves else Reduce.moves in
+  let moves s = if to_move s = PA then a_moves s else moves s in
+  let lk k r = match index t k with Some i -> record w i r | None -> None in
+  let below k r = match index t k with Some i -> below_rec w i r | None -> None in
+  let s0 = init starter in
+  let s0 = { s0 with sideB = { s0.sideB with life } } in
+  let i0 = Option.get (index t (key t.h t.tt s0)) in
+  let a, b = recs w i0 in
+  let rec first p = if p >= b then failwith "win-reach: no opening record" else if rval w p <= life then rank w i0 p else first (p + 1) in
+  let used = Hashtbl.create 100_000 and queue = Queue.create () in
+  let add i r = if not (Hashtbl.mem used (i, r)) then (Hashtbl.replace used (i, r) (); Queue.push (i, r) queue) in
+  add i0 (first a);
+  let memo = H.create 1024 in
+  let rec ok r root s =
+    match winner s with
+    | Some PB -> true
+    | Some PA -> false
+    | None ->
+      if (not root) && is_turn_start s then
+        let k = key t.h t.tt s in
+        match below k r with
+        | Some r' -> (match lk k r' with Some v -> v <= s.sideB.life | None -> false)
+        | None -> false
+      else if (not lax) && huge_event t.h s then false
+      else
+        match H.find_opt memo s with
+        | Some x -> x
+        | None ->
+          let x = match to_move s with
+            | PB -> List.exists (next r s) (moves s)
+            | PA -> List.for_all (next r s) (moves s) in
+          H.replace memo s x;
+          x
+  and next r s m = let s' = step s m in (not (too_many t.ott s')) && ok r false s' in
+  (* follow B's first working move and every A move to the next turn starts *)
+  let rec collect r root s =
+    if winner s <> None then ()
+    else if (not root) && is_turn_start s then begin
+      let k = key t.h t.tt s in
+      match below k r, index t k with
+      | Some r', Some i -> add i r'
+      | _ -> failwith "win-reach: a turn start without a record"
+    end else
+      match to_move s with
+      | PB -> collect r false (step s (List.find (next r s) (moves s)))
+      | PA -> List.iter (fun m -> collect r false (step s m)) (moves s)
+  in
+  let maxv = ref 0 and maxa = ref 0 and maxb = ref 0 and bad = ref 0 and n = ref 0 in
+  while not (Queue.is_empty queue) do
+    let i, r = Queue.pop queue in
+    match record w i r with
+    | None -> incr bad
+    | Some v ->
+      maxv := max !maxv v;
+      List.iter (fun s ->
+          let s = { s with sideB = { s.sideB with life = v } } in
+          List.iter (fun wk -> maxa := max !maxa wk.counters) s.sideA.bf;
+          List.iter (fun wk -> maxb := max !maxb wk.counters) s.sideB.bf;
+          H.reset memo;
+          if ok r true s then collect r true s else incr bad)
+        (record_states w i);
+      incr n;
+      if !n mod 100_000 = 0 then Printf.printf "  %d records, %d queued\n%!" !n (Queue.length queue)
+  done;
+  Printf.printf "%d records reached: B needs at most %d life; A's largest Walker %d (huge %d), B's %d; %d failed\n"
+    (Hashtbl.length used) !maxv !maxa t.h !maxb !bad
+
 (* Cost probe for checking win records inside Rocq: on the first [n] records
    reached from the opening, count search nodes with the memoised oracle and
    with an unmemoised one (as a pure Rocq hint would be). *)

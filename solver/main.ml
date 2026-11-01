@@ -416,6 +416,9 @@ let () =
     Certify.certify_win dir (pl starter)
       ~export:(Certify.export_rocq ~outdir ~chunks:(int_of_string chunks) ~fuel:(int_of_string fuel))
   | [| _; "win-depth"; dir; starter |] -> Certify.win_depth dir (pl starter)
+  | [| _; "win-reach"; dir; starter; life |] -> Certify.win_reach dir (pl starter) (int_of_string life)
+  | [| _; "win-line"; dir; starter; life; n |] ->
+    Certify.win_line dir (pl starter) (int_of_string life) (int_of_string n)
   | [| _; "win-cost"; dir; starter; n |] -> Certify.win_cost dir (pl starter) (int_of_string n)
   | [| _; "certify-debug"; dir; hex; v |] -> Certify.debug dir hex (int_of_string v)
   | [| _; "walk"; seed; steps |] -> Walk.run (int_of_string seed) (int_of_string steps)
