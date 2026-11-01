@@ -1,9 +1,6 @@
 open Model
 open Rules
 
-(* TCB_MODERN=1 selects the post-Foundations damage rules (comparison mode). *)
-let () = Rules.modern := Sys.getenv_opt "TCB_MODERN" = Some "1"
-
 let pl = function "A" -> PA | _ -> PB
 
 let print_line line =

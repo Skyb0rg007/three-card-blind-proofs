@@ -151,8 +151,8 @@ Proof. intros d d' [i |] E; cbn; [apply walker_power_bf; exact E | reflexivity].
 Lemma damage_eq : forall act ft a b a' b' c,
   sideA_rel H a a' -> sideB_rel b b' ->
   huge_event (mkState act ft a b c ChooseDamage) = false ->
-  damage_moves false (mkState act ft a b c ChooseDamage) =
-  damage_moves false (mkState act ft a' b' c ChooseDamage).
+  damage_moves (mkState act ft a b c ChooseDamage) =
+  damage_moves (mkState act ft a' b' c ChooseDamage).
 Proof.
   intros act ft a b a' b' c HA HB Hh.
   pose proof HA as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hbf & _ & _).
@@ -204,7 +204,7 @@ Proof.
   cbn [Model.active Model.first_turn Model.cmb Model.pend Model.sideA Model.sideB] in *.
   subst act' ft' c' pd'.
   pose proof HA as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hbf & Hu & _).
-  unfold moves, moves_gen.
+  unfold moves.
   destruct pd as [st p passed | | | | | st p cards | w].
   - symmetry. apply window_eq; assumption.
   - destruct act; [| exfalso; apply N1; split; reflexivity].
@@ -228,7 +228,7 @@ Proof.
   subst act' ft' c' pd'.
   destruct HB as (_ & Hu & _ & Hs). apply strip_b_fields in Hs.
   destruct Hs as (_ & _ & _ & _ & Hbf & _ & _ & _).
-  unfold moves, moves_gen in *.
+  unfold moves in *.
   destruct Hc as [(-> & ->) | (-> & ->)].
   - unfold attack_moves in *. cbn [get_side Model.active Model.sideB] in *. rewrite <- Hbf.
     apply in_flat_map in Hin as [ws [Hws Hin]]. apply in_map_iff in Hin as [k [<- Hk]].
@@ -520,7 +520,7 @@ Proof.
     destruct (opp (active s)); [apply RA_mapA; [exact sa_untap | exact HR] | apply RA_mapB; exact HR].
 Qed.
 
-Lemma RA_block : forall wb tb tr s u, RA s u -> RA (do_block false wb tb tr s) (do_block false wb tb tr u).
+Lemma RA_block : forall wb tb tr s u, RA s u -> RA (do_block wb tb tr s) (do_block wb tb tr u).
 Proof.
   intros wb tb tr [act ft a b c pd] [act' ft' a' b' c' pd'] (E1 & E2 & E3 & E4 & Hn & HA & EB).
   ra_cbn. subst. unfold do_block, set_cmb, set_pend. cbn.
@@ -594,7 +594,7 @@ Definition damage_alt (js : list nat) (s : state) : state :=
   else set_pend (Window DamageStep ap false)
          (map_side dp (fun d => set_life (d.(life) - unblocked) d) s).
 
-Lemma damage_alt_eq : forall js s, do_damage false js s = damage_alt js s.
+Lemma damage_alt_eq : forall js s, do_damage js s = damage_alt js s.
 Proof. reflexivity. Qed.
 
 Lemma nonhuge_eq : forall a a' i, Forall2 walker_rel a.(bf) a'.(bf) -> walker_power a i < H ->
@@ -678,7 +678,7 @@ Proof.
 Qed.
 
 Lemma RA_damage : forall s u js, RA s u -> s.(pend) = ChooseDamage -> huge_event s = false ->
-  In (Assign js) (damage_moves false s) -> RA (do_damage false js s) (do_damage false js u).
+  In (Assign js) (damage_moves s) -> RA (do_damage js s) (do_damage js u).
 Proof.
   intros [act ft a b c pd] [act' ft' a' b' c' pd'] js (E1 & E2 & E3 & E4 & Hn & HA & EB) Ep Hh Hin.
   ra_cbn. subst act' ft' c' pd' b' pd.
@@ -771,7 +771,7 @@ Lemma RA_step : forall s u m, RA s u -> In m (moves s) -> huge_event s = false -
 Proof.
   intros s u m HR Hin Hh. revert Hin.
   pose proof HR as (E1 & E2 & E3 & E4 & Hns & HA & EB).
-  unfold step, step_gen, moves, moves_gen. rewrite <- E4.
+  unfold step, moves. rewrite <- E4.
   destruct (pend s) as [st p passed | | | | | st p cards | w] eqn:Ep, m; intros Hin; try exact HR.
   - destruct passed; [apply RA_end_step; exact HR | apply RA_set_pend; [exact I | exact HR]].
   - (* Pump *)

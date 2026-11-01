@@ -45,7 +45,7 @@ Proof. intros [] k []; reflexivity. Qed.
     restricted to the model's own definitions, so arithmetic and list
     functions stay folded. *)
 Ltac simpl_step :=
-  cbv beta iota zeta delta [step step_gen bump bump_side more_thop map_side get_side set_side
+  cbv beta iota zeta delta [step bump bump_side more_thop map_side get_side set_side
     do_pump do_elixir do_cast_walker do_cast_elixir do_attack do_block do_order
     do_damage end_step next_turn empty_pools with_payment pay defender draw
     opp andb orb negb player_eqb is_main walker_power blocker_toughness
@@ -81,7 +81,7 @@ Ltac leb_facts :=
   end.
 
 Ltac simpl_moves :=
-  cbv beta iota zeta delta [moves moves_gen window_moves attack_moves block_moves
+  cbv beta iota zeta delta [moves window_moves attack_moves block_moves
     order_moves damage_moves can_pay pay defender opp andb orb negb player_eqb
     walker_power blocker_toughness bump bump_side set_life is_main more_thop
     map_side get_side set_side set_pool set_city set_thop_u set_thop_t Model.pend Model.active Model.sideA Model.sideB
@@ -212,7 +212,7 @@ Proof.
   destruct s as [act ft [] [] [] pd].
   destruct pd as [st q passed | | | | | st q cards | w], m;
     try (destruct p, act; cbv beta iota delta [more_thop map_side get_side set_side
-      set_thop_u set_thop_t step step_gen Model.pend] in *; cbn in *; repeat split; lia).
+      set_thop_u set_thop_t step Model.pend] in *; cbn in *; repeat split; lia).
   - (* Pass *)
     destruct passed; [| destruct p, q, act; simpl_step; fin_thop].
     destruct p, q, act, st, ft; simpl_step; fin_thop.
@@ -257,7 +257,7 @@ Proof.
 Qed.
 
 Ltac simpl_combat_moves :=
-  cbv beta iota zeta delta [moves moves_gen attack_moves block_moves defender opp
+  cbv beta iota zeta delta [moves attack_moves block_moves defender opp
     more_thop map_side get_side set_side set_thop_u set_thop_t Model.pend Model.active
     Model.sideA Model.sideB Model.cmb Model.thop_u Model.thop_t Model.bf] in *.
 

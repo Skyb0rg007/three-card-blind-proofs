@@ -523,6 +523,10 @@ at most `tt`. All runs are A first, from the opening.
 | macro | 10 | 16 | ≤ 6 | ≤ 16 | B life ≤ 15 |
 | macro | 24 | 24 | ≤ 6 | ≤ 8 | B life ≤ 16 |
 | macro | 24 | 24 | ≤ 6 | ≤ 4 | B life ≤ 20 |
+| macro | 24 | 12 | ≤ 4 | ≤ 6 | B life ≤ 19 |
+| macro | 24 | 12 | ≤ 4 | ≤ 5 | B life ≤ 19 |
+| macro | 24 | 12 | ≤ 6 | ≤ 6 | B life ≤ 16 |
+| macro | 24 | 12 | ≤ 6 | ≤ 5 | B life ≤ 17 |
 
 So a B held to a 6/6 Walker and at most 8 Thopters beats A from B life
 16–17, whatever A's caps. Bigger A Walkers barely help (15 at `t` 10, 16 at
@@ -548,6 +552,7 @@ The B-win side, same B (Walker 6, Thopters 8, B's moves filtered), A first:
 | every legal move | 24 | 24 | strict (sound) | B life ≥ 24 (218M positions, 22 min, 12 GB) |
 | filtered | 24 | 12 | strict | B life ≥ 24 |
 | filtered | 32 | 12 | strict | B life ≥ 24 |
+| filtered, B Walker 6, B Thopters 6 | 40 | 8 | strict | B life ≥ 24 (84M positions, 5.5 min, 3 GB) |
 
 The whole gap between 18 and 24 is the huge-Walker rule: in the strict check,
 an A Walker past `ot` that attacks unblocked or fights a big block is a loss
@@ -569,3 +574,13 @@ which:
 
 What would tell them apart is how long B's capped wins take: a win that ends
 before A could reach its cap doesn't depend on the cap.
+
+A note on rates. With B's Walker and Thopters small, an A Walker bigger than
+all of B's possible blockers together can never die, and its size matters only
+for the damage it deals unblocked. So "A capped at `t`" loses for A only by
+damage, and B's Elixir outpaces that: a cycle (activate for 2, recast for 1,
+2 rounds) banks 5 life, 2.5 a round, while A's two Walkers together grow at
+most 2 counters a round (City makes 2 mana). The strict B-win forbids exactly
+this, since B must chump every huge attacker. A sound B-win that allows it
+would track B's life relative to A's Walker sizes (the pair (B life, A Walker)
+shifted together is the same game while the Walker can't die).

@@ -54,7 +54,7 @@ Qed.
 
 Lemma moves_ne : forall s, winner s = None -> moves s <> [].
 Proof.
-  intros [act ft a b c pd] Hw. unfold moves, moves_gen.
+  intros [act ft a b c pd] Hw. unfold moves.
   destruct pd; cbn [Model.pend].
   - unfold window_moves. discriminate.
   - unfold attack_moves. apply flat_map_ne with []; [apply subsets_nil | cbn; discriminate].

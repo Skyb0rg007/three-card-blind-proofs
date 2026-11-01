@@ -155,24 +155,6 @@ Example combat_pump_after_order_result :
               && Nat.eqb s.(sideB).(life) 20) = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Comparison mode (post-Foundations): there is no order to announce, and
-    after B pumps its blocker to 3/3 the attacker may still kill just the
-    Thopter (bitmask 2) instead of the Walker (bitmask 1). *)
-Fixpoint play_new (s : state) (ms : list move) : option state :=
-  match ms with
-  | [] => Some s
-  | m :: r =>
-      if existsb (move_eqb m) (moves_gen true s) then play_new (step_gen true s m) r
-      else None
-  end.
-
-Example combat_new_rules_after_pump :
-  match play_new combat_a (combat_a_blocked ++ [Pass; Pump 0] ++ passes 2) with
-  | Some s => list_eqb move_eqb (moves_gen true s) [Assign [1]; Assign [2]]
-  | None => false
-  end = true.
-Proof. vm_compute. reflexivity. Qed.
-
 (** Thopters: two attack, one is blocked by a Thopter, one gets through. *)
 Example thopter_trade :
   after

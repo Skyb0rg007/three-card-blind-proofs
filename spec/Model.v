@@ -308,40 +308,24 @@ Definition kill_choices (p : nat) (ts : list nat) : list nat :=
   | t :: _ => if p <? t then [0] else seq 1 (max_prefix p ts)
   end.
 
-(** Comparison mode (post-Foundations, §3.6): the attacker divides damage
-    freely, so any set of blockers whose toughness fits in [p] can be the
-    killed set, and the empty set when [p] can be spread without killing.
-    A killed set is a bitmask over the blockers in [blk] order. *)
-Definition masked {X} (m : nat) (xs : list X) : list X :=
-  map snd (filter (fun '(i, _) => Nat.testbit m i) (enum xs)).
-
-Definition kill_sets_new (p : nat) (ts : list nat) : list nat :=
-  match ts with
-  | [] => [0]
-  | _ =>
-      filter (fun m => if m =? 0 then p <=? list_sum (map pred ts) else list_sum (masked m ts) <=? p)
-        (seq 0 (2 ^ length ts))
-  end.
-
-Definition damage_moves (nw : bool) (s : state) : list move :=
+Definition damage_moves (s : state) : list move :=
   let a := get_side s.(active) s in
   let d := get_side (defender s) s in
   let per_attacker :=
     combine (map (walker_power a) s.(cmb).(atk)) s.(cmb).(blk) in
-  let choices := if nw then kill_sets_new else kill_choices in
   map Assign
-    (product (map (fun '(p, bs) => choices p (map (blocker_toughness d) bs))
+    (product (map (fun '(p, bs) => kill_choices p (map (blocker_toughness d) bs))
                   per_attacker)).
 
 (** ** All legal moves *)
 
-Definition moves_gen (nw : bool) (s : state) : list move :=
+Definition moves (s : state) : list move :=
   match s.(pend) with
   | Window st p _ => window_moves st p s
   | ChooseAttack => attack_moves s
   | ChooseBlock => block_moves s
   | ChooseOrder => order_moves s
-  | ChooseDamage => damage_moves nw s
+  | ChooseDamage => damage_moves s
   | ChooseShuffle _ _ cards => map Arrange (orders card_eq_dec cards)
   | Over _ => []
   end.
@@ -441,7 +425,7 @@ Definition do_attack (ws : list nat) (k : nat) (s : state) : state :=
   set_pend (Window DeclAtk ap false)
     (set_cmb (mkCombat ws k (map (fun _ => []) ws) 0) s).
 
-Definition do_block (nw : bool) (wb : list (option nat)) (tb : list nat) (tr : nat) (s : state) : state :=
+Definition do_block (wb : list (option nat)) (tb : list nat) (tr : nat) (s : state) : state :=
   let c := s.(cmb) in
   let blks :=
     map (fun '(a, k) =>
@@ -450,7 +434,7 @@ Definition do_block (nw : bool) (wb : list (option nat)) (tb : list nat) (tr : n
         (enum tb) in
   let c := mkCombat c.(atk) c.(atk_thop) blks tr in
   let s := set_cmb c s in
-  if has_multiblock c && negb nw then set_pend ChooseOrder s
+  if has_multiblock c then set_pend ChooseOrder s
   else set_pend (Window DeclBlk s.(active) false) s.
 
 Definition do_order (os : list (list blocker)) (s : state) : state :=
@@ -468,7 +452,7 @@ Definition bury (dead : list nat) (sd : side) : side :=
 
 (** Combat damage (§3.6, §3.7). [js] gives, per attacking Walker, how many of
     its blockers (a prefix of its damage assignment order) are killed. *)
-Definition do_damage (nw : bool) (js : list nat) (s : state) : state :=
+Definition do_damage (js : list nat) (s : state) : state :=
   let ap := s.(active) in
   let dp := defender s in
   let a := get_side ap s in
@@ -488,7 +472,7 @@ Definition do_damage (nw : bool) (js : list nat) (s : state) : state :=
                  | _ => walker_power a i <=? list_sum (map (blocker_toughness d) bs)
                  end) fights) in
   (* blockers that die *)
-  let killed := flat_map (fun '(_, bs, j) => if nw then masked j bs else firstn j bs) fights in
+  let killed := flat_map (fun '(_, bs, j) => firstn j bs) fights in
   let d_dead := flat_map (fun b => match b with BW i => [i] | BT => [] end) killed in
   let d_thop_dead := count_occ blocker_eq_dec killed BT + c.(trades) in
   let a := bury a_dead (set_thop_t (a.(thop_t) - c.(trades)) a) in
@@ -500,9 +484,9 @@ Definition do_damage (nw : bool) (js : list nat) (s : state) : state :=
 
 (** ** The transition function
 
-    [step_gen nw s m] is only meaningful when [In m (moves_gen nw s)]. *)
+    [step s m] is only meaningful when [In m (moves s)]. *)
 
-Definition step_gen (nw : bool) (s : state) (m : move) : state :=
+Definition step (s : state) (m : move) : state :=
   match s.(pend), m with
   | Window st p passed, Pass =>
       if passed then end_step st s else set_pend (Window st (opp p) true) s
@@ -511,15 +495,10 @@ Definition step_gen (nw : bool) (s : state) (m : move) : state :=
   | Window st p _, CastWalker x => do_cast_walker st p x s
   | Window st p _, CastElixir => do_cast_elixir st p s
   | ChooseAttack, Attack ws k => do_attack ws k s
-  | ChooseBlock, Block wb tb tr => do_block nw wb tb tr s
+  | ChooseBlock, Block wb tb tr => do_block wb tb tr s
   | ChooseOrder, Order os => do_order os s
-  | ChooseDamage, Assign js => do_damage nw js s
+  | ChooseDamage, Assign js => do_damage js s
   | ChooseShuffle st p _, Arrange lib =>
       set_pend (Window st p false) (map_side p (set_library lib) s)
   | _, _ => s
   end.
-
-(** The authoritative rules are pre-Foundations (§3.6); [moves_gen true] and
-    [step_gen true] give the post-Foundations comparison mode. *)
-Definition moves : state -> list move := moves_gen false.
-Definition step : state -> move -> state := step_gen false.
