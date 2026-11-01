@@ -500,3 +500,39 @@ Candidate reductions for A-safety:
   by linear inequalities over sizes, lives and Thopters (for example
   "a₁, a₂ ≥ b + 1 and B's life ≤ a₁ + a₂ + …"). Then prove its closure
   symbolically (in Rocq with `lia`) instead of by enumeration.
+
+## A-safe diagnostics (2026-11-01)
+
+To find what makes A-safe collapse, these runs relax the opponent's caps
+(`TCB_LAX=dmg,die,many`): B's Walker silently stops at `ot + 1`, and B's
+Thopters beyond `ott` are discarded. Each relaxation only takes options from
+B, so it is optimistic for A. B's moves are also filtered (optimistic for A).
+What stays pessimistic for A is A's own caps: Walkers at most `t`, Thopters
+at most `tt`. All runs are A first, from the opening.
+
+| A's moves | A Walker cap `t` | A Thopter cap `tt` | B Walker | B Thopters | A safe with |
+|---|---|---|---|---|---|
+| macro | 10 | 8 | ≤ 8 | ≤ 8 | B life ≤ 15 |
+| macro | 6 | 8 | ≤ 6 | ≤ 8 | B life ≤ 13 |
+| macro | 16 | 8 | ≤ 6 | ≤ 8 | B life ≤ 15 |
+| macro | 24 | 8 | ≤ 6 | ≤ 8 | B life ≤ 16 |
+| macro | 32 | 8 | ≤ 6 | ≤ 8 | B life ≤ 16 |
+| every legal move | 10 | 8 | ≤ 6 | ≤ 8 | B life ≤ 15 |
+| macro | 10 | 4 | ≤ 6 | ≤ 4 | B life ≤ 19 |
+| macro | 10 | 16 | ≤ 6 | ≤ 16 | B life ≤ 15 |
+| macro | 24 | 24 | ≤ 6 | ≤ 8 | B life ≤ 16 |
+| macro | 24 | 24 | ≤ 6 | ≤ 4 | B life ≤ 20 |
+
+So a B held to a 6/6 Walker and at most 8 Thopters beats A from B life
+16–17, whatever A's caps. Bigger A Walkers barely help (15 at `t` 10, 16 at
+24 and 32). What decides it is B's Thopter count: held to 4, B can't win
+from 20.
+
+The mirrored B-win (B Walker 6, B Thopters 8, A Walkers saturating silently
+at 25, A's Thopters cut at 24, A filtered) gives **B wins with B life ≥ 18**
+(95M positions). In its line, B banks life with Elixir (20 → 35) while A
+grows, then trades its Walker into Thopters and races in the air.
+
+This cuts against the draw hypothesis. The strict B-win probes above (B needs
+24–25) count an A Walker past `ot` as a loss for B. That rule, not A's play,
+may be what holds B back.

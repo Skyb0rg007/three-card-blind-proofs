@@ -122,27 +122,28 @@ let of_key k : state =
    so a failing check can be traced to the reduction responsible:
    dmg (a huge Walker's damage is its representative's), die (a huge Walker
    may die or be over-blocked; its Thopters are its representative's),
-   many (extra opposing Thopters are discarded instead of losing). *)
+   many (opposing Thopters beyond ott are discarded instead of losing). *)
 let lax =
   match Sys.getenv_opt "TCB_LAX" with
   | None -> []
   | Some l -> String.split_on_char ',' l
 
 (* Clamp after a step: the opponent's Walkers at most huge, the
-   protagonist's Thopters at most tt (tapped ones go first). *)
+   protagonist's Thopters at most tt (tapped ones go first), and with
+   TCB_LAX=many the opponent's at most ott. *)
 let clamp c s =
   let o = opp c.prot in
   let os = side_of o s in
   let os = { os with bf = List.map (fun w -> if w.counters > huge c then { w with counters = huge c } else w) os.bf } in
-  let cut sd =
-    let extra = sd.thop_u + sd.thop_t - c.tt in
+  let cut tt sd =
+    let extra = sd.thop_u + sd.thop_t - tt in
     if extra <= 0 then sd
     else
       let dt = min extra sd.thop_t in
       { sd with thop_t = sd.thop_t - dt; thop_u = sd.thop_u - (extra - dt) }
   in
-  let os = if List.mem "many" lax then cut os else os in
-  set_side c.prot (cut (side_of c.prot s)) (set_side o os s)
+  let os = if List.mem "many" lax then cut c.ott os else os in
+  set_side c.prot (cut c.tt (side_of c.prot s)) (set_side o os s)
 
 (* Does this move make an exact huge size matter (a loss for the protagonist)? *)
 let huge_event c s m =
