@@ -632,3 +632,28 @@ fixstats wins at 8+ material: those are positions where B already holds that
 material against A's current Walkers, and B can't reach them from the start
 while A keeps growing.
 
+**The relaxed huge rules against A's cap.** Same B (Walker 6, Thopters 6,
+`ott` 8, filtered), A first, with only the huge-Walker rules relaxed
+(`TCB_LAX=dmg,die`: a huge A Walker hits for `ot + 1` and dies to `ot + 1`
+damage), against the strict check:
+
+| rules | `ot` | `lmax` | B wins with |
+|---|---|---|---|
+| relaxed | 24 | 100 | B life ≥ 18 |
+| relaxed | 32 | 100 | B life ≥ 18 |
+| relaxed | 40 | 100 | B life ≥ 24 |
+| relaxed | 64 | 100 | B life ≥ 24 |
+| relaxed | 40 | 200 | B life ≥ 18 |
+| relaxed | 64 | 300 | B life ≥ 18 (28 min, 6.5 GB) |
+| strict | 40 | 200 | B life ≥ 24 |
+
+The jump at `ot` 40 is the life cap: positions where B needs more than `lmax`
+count as no B win. Given room, the relaxed B wins from 18 again by banking
+past 100 life. The strict check doesn't move with `lmax`. So B's relaxed win
+needs both: life banked well past A's Walkers, *and* A's Walkers held to
+`ot + 1` once they pass the cap. They do pass it while B banks, and B wins
+only because the relaxation caps their hits. Whether B's banking (2.5 life a
+round) outruns an A that never stops growing (2 counters a round between its
+Walkers, less while attacking) is what the real game turns on, and no fixed
+cap answers it: strict gives 24 and relaxed 18 at every cap tried.
+
