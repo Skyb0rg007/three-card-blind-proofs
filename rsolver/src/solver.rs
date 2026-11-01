@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap as HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -242,51 +242,64 @@ impl Deps {
         &self.list[self.start[b] as usize..self.start[b + 1] as usize]
     }
 
+    /// Two passes over the programs (count, then fill), so that no
+    /// (target, reader) pairs are held in memory. A row's order depends on
+    /// the threads, which only changes the order readers are marked dirty.
     fn build(sv: &Solver, progs: &Programs, w: usize) -> Deps {
         let t0 = Instant::now();
         let nb = sv.nb;
-        // per worker, (target, reader) pairs of its slice of readers
-        let pairs: Vec<Vec<(u32, u32)>> = std::thread::scope(|sc| {
-            let hs: Vec<_> = (0..w)
-                .map(|k| {
-                    sc.spawn(move || {
-                        let (lo, hi) = chunk(nb, w, k);
-                        let mut out = vec![];
-                        let mut ts = vec![];
-                        for j in lo..hi {
-                            ts.clear();
-                            for x in fix::packed_targets(progs.prog(j)) {
-                                if (x & 31) < 20 && (sv.pinned || x & 31 == 0) {
-                                    ts.push((x >> 5) as u32);
-                                }
-                            }
-                            ts.sort_unstable();
-                            ts.dedup();
-                            out.extend(ts.iter().map(|&t| (t, j as u32)));
+        // the distinct same-level targets of reader j, into ts
+        let targets = |j: usize, ts: &mut Vec<u32>| {
+            ts.clear();
+            for x in fix::packed_targets(progs.prog(j)) {
+                if (x & 31) < 20 && (sv.pinned || x & 31 == 0) {
+                    ts.push((x >> 5) as u32);
+                }
+            }
+            ts.sort_unstable();
+            ts.dedup();
+        };
+        let fill: Vec<AtomicU64> = (0..nb + 1).map(|_| AtomicU64::new(0)).collect();
+        std::thread::scope(|sc| {
+            for k in 0..w {
+                let (fill, targets) = (&fill, &targets);
+                sc.spawn(move || {
+                    let (lo, hi) = chunk(nb, w, k);
+                    let mut ts = vec![];
+                    for j in lo..hi {
+                        targets(j, &mut ts);
+                        for &t in &ts {
+                            fill[t as usize + 1].fetch_add(1, Relaxed);
                         }
-                        out
-                    })
-                })
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap()).collect()
+                    }
+                });
+            }
         });
         let mut start = vec![0u64; nb + 1];
-        for p in &pairs {
-            for &(t, _) in p {
-                start[t as usize + 1] += 1;
-            }
-        }
         for b in 0..nb {
-            start[b + 1] += start[b];
+            start[b + 1] = start[b] + fill[b + 1].load(Relaxed);
         }
-        let mut fill = start.clone();
-        let mut list = vec![0u32; start[nb] as usize];
-        for p in pairs {
-            for (t, j) in p {
-                list[fill[t as usize] as usize] = j;
-                fill[t as usize] += 1;
+        for b in 0..=nb {
+            fill[b].store(start[b], Relaxed);
+        }
+        let list: Vec<AtomicU32> = (0..start[nb]).map(|_| AtomicU32::new(0)).collect();
+        std::thread::scope(|sc| {
+            for k in 0..w {
+                let (fill, targets, list) = (&fill, &targets, &list);
+                sc.spawn(move || {
+                    let (lo, hi) = chunk(nb, w, k);
+                    let mut ts = vec![];
+                    for j in lo..hi {
+                        targets(j, &mut ts);
+                        for &t in &ts {
+                            list[fill[t as usize].fetch_add(1, Relaxed) as usize].store(j as u32, Relaxed);
+                        }
+                    }
+                });
             }
-        }
+        });
+        drop(fill);
+        let list: Vec<u32> = list.into_iter().map(|x| x.into_inner()).collect();
         println!("  dependencies: {} ({:.1}s)", list.len(), t0.elapsed().as_secs_f64());
         Deps { start, list }
     }
@@ -508,12 +521,24 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
     }
 }
 
-/// A line in one atomic word: c (as `to32`) above, b below.
-fn lenc(v: Line) -> i64 {
-    ((fix::to32(v.c) as i64) << 32) | (v.b as u32 as i64)
+/// A normalised line in one atomic 32-bit word: 16c + b, with INF and
+/// NINF as the int32 extremes (c is within +-lmax and b within 0..=BMAX).
+fn lenc(v: Line) -> i32 {
+    if v.c >= INF {
+        i32::MAX
+    } else if v.c <= NINF {
+        i32::MIN
+    } else {
+        debug_assert!((0..=fix::BMAX).contains(&v.b) && v.c.abs() < 1 << 26);
+        (16 * v.c + v.b) as i32
+    }
 }
-fn ldec(x: i64) -> Line {
-    Line { c: fix::of32((x >> 32) as i32), b: x as i32 as i64 }
+fn ldec(x: i32) -> Line {
+    match x {
+        i32::MAX => LINF,
+        i32::MIN => LNINF,
+        _ => Line { c: (x >> 4) as i64, b: (x & 15) as i64 },
+    }
 }
 
 /// The A-safe fixed point in BIG mode (`TCB_BIG=1`): values are lines
@@ -527,8 +552,8 @@ fn ldec(x: i64) -> Line {
 pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
     let t0 = Instant::now();
     let (n, nb) = (sv.n, sv.nb);
-    assert!(c.big && !c.up() && !sv.pinned);
-    let work: Vec<AtomicI64> = (0..n).map(|_| AtomicI64::new(lenc(LINF))).collect();
+    assert!(c.big && !c.up() && !sv.pinned && c.lmax < 1 << 26);
+    let work: Vec<AtomicI32> = (0..n).map(|_| AtomicI32::new(lenc(LINF))).collect();
     let wget = |i: usize| ldec(work[i].load(Relaxed));
     let wset = |i: usize, v: Line| work[i].store(lenc(v), Relaxed);
     let bounds = std::env::var("TCB_NOBOUND").ok().as_deref() != Some("1");
