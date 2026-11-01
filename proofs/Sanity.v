@@ -2,7 +2,7 @@
 
 From Stdlib Require Import List Bool Arith.
 Import ListNotations.
-From TCB Require Import Model.
+From TCB.Spec Require Import Model.
 
 (** ** Replaying scripts of moves, checking that each move is legal *)
 

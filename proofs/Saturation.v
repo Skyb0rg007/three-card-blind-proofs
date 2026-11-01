@@ -8,7 +8,8 @@
 
 From Stdlib Require Import List Bool Arith Lia.
 Import ListNotations.
-From TCB Require Import Model Game Mono Checker.
+From TCB.Spec Require Import Model Game.
+From TCB.Proofs Require Import Mono Checker.
 
 Section Saturation.
 

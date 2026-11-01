@@ -1,5 +1,5 @@
 (* Heuristic move filter used only for exploration: it keeps the moves with
-   sensible timing (see RULES.md for why the others are usually dominated).
+   sensible timing (see spec/RULES.md for why the others are usually dominated).
    Results found with it must be re-checked against the full model. *)
 open Model
 open Rules

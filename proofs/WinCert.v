@@ -14,7 +14,8 @@
 
 From Stdlib Require Import List Bool Arith Lia.
 Import ListNotations.
-From TCB Require Import Model Game Checker Saturation.
+From TCB.Spec Require Import Model Game.
+From TCB.Proofs Require Import Checker Saturation.
 
 (** A's move lists agree under [R], so A has a move in the real state
     whenever it has one in the certificate's. *)

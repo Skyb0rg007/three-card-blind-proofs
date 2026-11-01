@@ -7,7 +7,8 @@
     makes [wins_theirs] apply to every opponent node. *)
 From Stdlib Require Import List Classical Arith.
 Import ListNotations.
-From TCB Require Import Model Game.
+From TCB.Spec Require Import Model Game.
+From TCB.Proofs Require Import GameFacts.
 
 Lemma flat_map_ne : forall {A B} (f : A -> list B) l x,
   In x l -> f x <> [] -> flat_map f l <> [].

@@ -1,4 +1,4 @@
-//! The game model: a direct port of theories/Model.v (pre-Foundations
+//! The game model: a direct port of spec/Model.v (pre-Foundations
 //! damage rules only). Move lists come out in the same order as the
 //! extracted OCaml, which the differential tests rely on. Natural-number
 //! subtraction saturates at zero, as in Rocq.

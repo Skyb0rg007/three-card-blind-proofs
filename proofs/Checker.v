@@ -29,7 +29,7 @@
 
 From Stdlib Require Import List Bool Arith Lia.
 Import ListNotations.
-From TCB Require Import Model Game.
+From TCB.Spec Require Import Model Game.
 
 (** Turn starts: an upkeep window where the active player has priority and
     nobody has passed. (The solvers also stop where the other player has

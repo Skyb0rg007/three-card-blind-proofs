@@ -19,7 +19,8 @@
 
 From Stdlib Require Import List Bool Arith Lia.
 Import ListNotations.
-From TCB Require Import Model Game.
+From TCB.Spec Require Import Model Game.
+From TCB.Proofs Require Import GameFacts.
 
 Definition player_eq_dec (p q : player) : {p = q} + {p <> q}.
 Proof. decide equality. Defined.

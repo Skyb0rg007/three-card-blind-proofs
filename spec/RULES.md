@@ -16,7 +16,7 @@ Rule numbers refer to the pinned Comprehensive Rules (CR) below.
   as of July 30, 2024", published as
   `https://media.wizards.com/2024/downloads/MagicCompRules%2020240802.txt`,
   SHA-256 `072395073f9b79f840c36f458b0d35997787b741f2357cfe3dd8ed9f74c7884d`.
-  `scripts/fetch-cr.sh` downloads and verifies it.
+  `scripts/fetch-cr.sh` (run from the repository root) downloads and verifies it.
 - This version still has **damage assignment order** (CR 509.2, 509.3,
   510.1c, 510.1d). The order was removed by the Foundations update, effective
   November 8, 2024 (`MagicCompRules 20241108.txt`, SHA-256

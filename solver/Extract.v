@@ -1,5 +1,6 @@
 From Stdlib Require Extraction ExtrOcamlBasic ExtrOcamlNatInt.
-From TCB Require Import Model Checker WinCert.
+From TCB.Spec Require Import Model.
+From TCB.Proofs Require Import Checker WinCert.
 Set Warnings "-extraction-default-directory".
 Extraction Language OCaml.
 Extraction "model.ml" init moves step moves_gen step_gen to_move winner

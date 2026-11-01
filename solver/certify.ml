@@ -1,4 +1,4 @@
-(* Driver for the extracted certificate checker (theories/Checker.v).
+(* Driver for the extracted certificate checker (proofs/Checker.v).
 
    [Saturation.certified_opening] says: if [lookup s = Some v] implies
    [check_node h ott tt lookup hint fuel true (entry s v) = true] for every
