@@ -671,3 +671,15 @@ keeps growing, the relaxed rules give no evidence of a B win, and the strict
 grows, or only delays B's records, is short: B wins in about 25 rounds with
 two Thopters in the air, so A's defence needs pressure as well as growth.)
 
+**No capped certificate can show A safe.** The relaxed A-safe run with A
+capped at 24 (B Walker ≤ 6, Thopters ≤ 6) gives A safe for B life ≤ 16 with
+`lmax` 100 and again with `lmax` 300, so B's win there isn't banking past the
+life cap. The relaxed B-win at `ot` is the same as capping A at `ot + 1` (a
+pump beyond changes nothing it is compared against), and it gives B the win
+from 18 at every `ot` tried up to 64. A bigger Walker is never worse for its
+controller, so capping A is the only sound way to make A's side finite, and
+every capped A loses to B from 17–18. If A first is a draw, it is a draw
+because A's Walkers grow without bound: an A-safe proof has to argue about
+unbounded sizes (a symbolic invariant), and no finite A-safe table or
+certificate in the style of the B results can exist.
+
