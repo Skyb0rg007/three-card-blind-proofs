@@ -478,6 +478,35 @@ let certify_win ?export dir starter =
   | Some f -> f w used k0 r0
   | None -> ()
 
+(* How long a ranked B win can last: the opening's record on B's starting
+   life, and for each A-life level the highest round any record reaches. A
+   line from the opening stays within a level for at most that many turn
+   starts, so the sum bounds the line's length. *)
+let win_depth dir starter =
+  let w = open_win dir in
+  let t = w.wt in
+  let s0 = init starter in
+  let i0 = Option.get (index t (key t.h t.tt s0)) in
+  let a, b = recs w i0 in
+  for p = a to b - 1 do
+    let r = rank w i0 p in
+    Printf.printf "opening record: B life %d at level %d, round %d\n" (rval w p) (r / level + 1) (r mod level)
+  done;
+  let nb = t.sv.Fix.nb and nl = t.sv.Fix.nl in
+  let total = ref 0 in
+  for l = 0 to nl - 1 do
+    let m = ref 0 in
+    for i = l * nb to ((l + 1) * nb) - 1 do
+      let a, b = recs w i in
+      for p = a to b - 1 do
+        if finite t (rval w p) then m := max !m (Int32.to_int w.hrec.{2 * p})
+      done
+    done;
+    total := !total + !m;
+    Printf.printf "A life %d: rounds up to %d\n%!" (l + 1) !m
+  done;
+  Printf.printf "sum: %d turn starts\n" !total
+
 (* Cost probe for checking win records inside Rocq: on the first [n] records
    reached from the opening, count search nodes with the memoised oracle and
    with an unmemoised one (as a pure Rocq hint would be). *)
