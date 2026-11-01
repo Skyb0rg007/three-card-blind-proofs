@@ -698,3 +698,41 @@ legal line where A's Walkers grow for 70 rounds while B banks, with no
 fighting. If the real game is a draw, a stall like this, with A's fortress (a
 small Walker and a big one that keeps growing, both at home) against B's
 Walker, Elixir and banked life, is the natural target for the invariant.
+
+**Stall positions, by value.** `main fixval TABLE ACTIVE ALIFE AW ATHOP AHAND
+BW BTHOP BHAND ELIXIR` looks up one turn start (and, in a ranked table, its
+(round, life) records). A on 11 life with Walkers 5 and `a`, B with a
+Walker, Elixir on the battlefield, no Thopters, A to move:
+
+- Relaxed, B Walker 6: B needs `a + 7`, the same at `ot` 40 and 64.
+- The ranked `ot` 40 records for `a` = 11 show how: 75 life wins in 16 turn
+  starts; 58 in 82; 57 needs 214, a wait of 132 turn starts; below that B
+  banks 5 life every 4 turn starts and then waits. The wait shrinks as `a`
+  nears the clamp (132 at `a` = 11, 80 at 20, 40 at 30): B is waiting for
+  A's Walker to stop. Without the wait B needs about `5a + 3` (58, 103, 153
+  at `a` = 11, 20, 30). So against a B Walker of 6, B's banking (2.5 a round)
+  catches up only if A grows that Walker by less than half a counter a
+  round.
+- Strict `ot` 64 (sound for B), by A's big Walker (rows) and B's Walker
+  (columns):
+
+  | a \\ b | 1 | 2 | 3 | 4 | 5 | 6 |
+  |---|---|---|---|---|---|---|
+  | 6 | 28 | 22 | 12 | 10 | 18 | – |
+  | 8 | 32 | 24 | 14 | 12 | 26 | 46 |
+  | 10 | 36 | 26 | 16 | 14 | 35 | 56 |
+  | 11 | 38 | 27 | 16 | 15 | 39 | 61 |
+  | 12 | 40 | 28 | 16 | 15 | 43 | 66 |
+  | 14 | 44 | 30 | 16 | 15 | 51 | 77 |
+  | 16 | 47 | 31 | 17 | 15 | 59 | 88 |
+  | 18 | 51 | 32 | 22 | 20 | 67 | – |
+
+  (– : more than `lmax` 100.) A B Walker just under A's small Walker (3 or
+  4 against 5) wins from 15–17 life almost whatever A's big Walker is, while
+  5 or 6 makes the threshold climb about 4–5 per counter of A's. So the
+  stall with B on 6 is a choice B makes when it has life to spare, not a
+  forced shape. With A on 11 life, a small attacking B Walker beats A's
+  fortress cheaply. An A-safe invariant would have to keep A's life high
+  enough and cover thresholds that depend non-monotonically on B's Walker;
+  no single linear inequality like "B's life ≤ 5 × A's Walker" will do.
+

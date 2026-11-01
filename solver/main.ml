@@ -416,6 +416,27 @@ let () =
     Certify.certify_win dir (pl starter)
       ~export:(Certify.export_rocq ~outdir ~chunks:(int_of_string chunks) ~fuel:(int_of_string fuel))
   | [| _; "win-depth"; dir; starter |] -> Certify.win_depth dir (pl starter)
+  (* fixval TABLE ACTIVE ALIFE AWALKERS ATHOP AHAND BWALKERS BTHOP BHAND ELIXIR:
+     the life B needs at that turn start in a saved B table (as for pwin) *)
+  | [| _; "fixval"; dir; act; al; aw; at; ah; bw; bt; bh; el |] ->
+    let t = Certify.open_table dir in
+    let s = position (pl act) (int_of_string al) aw (int_of_string at) (int_of_string ah) 0 bw
+        (int_of_string bt) (int_of_string bh) el in
+    let k = Model.key t.Certify.h t.Certify.tt s in
+    (match Certify.lookup t k with
+     | Some v -> Printf.printf "B needs %d life" v
+     | None -> print_string "no B win (or not in the table)");
+    (* with ranks: every (round, life needed) record of the position *)
+    (match Certify.index t k with
+     | Some i when Sys.file_exists (Filename.concat dir "hidx") ->
+       let w = Certify.open_win dir in
+       let a, b = Certify.recs w i in
+       for p = a to b - 1 do
+         let v = Certify.rval w p in
+         if Certify.finite t v then Printf.printf " r%d:%d" (Certify.rank w i p mod Certify.level) v
+       done
+     | _ -> ());
+    print_newline ()
   | [| _; "win-reach"; dir; starter; life |] -> Certify.win_reach dir (pl starter) (int_of_string life)
   | [| _; "win-line"; dir; starter; life; n |] ->
     Certify.win_line dir (pl starter) (int_of_string life) (int_of_string n)
