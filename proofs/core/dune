@@ -1,0 +1,4 @@
+; The proofs of spec/Claims.v. Rocq checks these; they don't need reading.
+(rocq.theory
+ (name TCB.Proofs)
+ (theories Stdlib TCB.Spec))

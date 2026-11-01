@@ -1,0 +1,4 @@
+; The definitions: the game and the claims. This is all an auditor has to read.
+(rocq.theory
+ (name TCB.Spec)
+ (theories Stdlib))

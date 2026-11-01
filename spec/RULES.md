@@ -16,7 +16,7 @@ Rule numbers refer to the pinned Comprehensive Rules (CR) below.
   as of July 30, 2024", published as
   `https://media.wizards.com/2024/downloads/MagicCompRules%2020240802.txt`,
   SHA-256 `072395073f9b79f840c36f458b0d35997787b741f2357cfe3dd8ed9f74c7884d`.
-  `scripts/fetch-cr.sh` downloads and verifies it.
+  `scripts/fetch-cr.sh` (run from the repository root) downloads and verifies it.
 - This version still has **damage assignment order** (CR 509.2, 509.3,
   510.1c, 510.1d). The order was removed by the Foundations update, effective
   November 8, 2024 (`MagicCompRules 20241108.txt`, SHA-256
@@ -244,12 +244,6 @@ Playing City of Traitors isn't an action in the model; see S1.
     so the attacker may prefer to kill fewer blockers.
 - **Each blocker:** deals its power to the one attacker it blocks. An attacker
   dies if the total damage dealt to it is at least its toughness.
-- **Comparison mode (post-Foundations, for the check in PLAN.md only).** The
-  attacker divides damage freely (current CR 510.1c):
-  - Any non-empty set S of blockers can be the killed set if the toughness of
-    S adds up to at most P.
-  - The empty set can be the killed set if P is at most the sum of
-    `t(bᵢ) − 1` over all the blockers.
 
 ### 3.7 After damage
 
@@ -387,6 +381,5 @@ resolves.**
 1. **When the shuffle order is chosen (S9).** At the shuffle, not lazily at
    each draw. A lazy choice would give A information it couldn't have from a
    real shuffle.
-2. **Pre-Foundations damage assignment order** is authoritative. The solver
-   also runs the comparison mode in §3.6. Any difference in the result will be
-   reported, but it doesn't change the authoritative answer.
+2. **Pre-Foundations damage assignment order** is authoritative: the rules
+   from when Hangarback Walker was banned.

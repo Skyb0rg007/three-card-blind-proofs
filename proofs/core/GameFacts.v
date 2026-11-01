@@ -1,53 +1,16 @@
-(** * Game semantics (RULES.md §2, 3CB rule F5)
+(** * Basic facts about the game semantics
 
-    A player *wins* from a state if they can force the opponent to lose in
-    finitely many moves. A player is *safe* from a state if they can avoid
-    losing forever: there is a set of states containing it that the opponent
-    can never force them out of. The game is a draw when both players are
-    safe. *)
+    The three results of [Game.has_result] are mutually exclusive. *)
 
 From Stdlib Require Import List.
 Import ListNotations.
-From TCB Require Import Model.
+From TCB.Spec Require Import Model Game.
 
 Lemma opp_involutive : forall p, opp (opp p) = p.
 Proof. destruct p; reflexivity. Qed.
 
 Lemma opp_neq : forall p, opp p <> p.
 Proof. destruct p; discriminate. Qed.
-
-Inductive wins (p : player) : state -> Prop :=
-| wins_over s :
-    winner s = Some p -> wins p s
-| wins_mine s m :
-    winner s = None -> to_move s = p ->
-    In m (moves s) -> wins p (step s m) -> wins p s
-| wins_theirs s :
-    winner s = None -> to_move s = opp p -> moves s <> [] ->
-    (forall m, In m (moves s) -> wins p (step s m)) -> wins p s.
-
-(** [S] is a set of states from which [p] never loses. *)
-Definition safe_set (p : player) (S : state -> Prop) : Prop :=
-  forall s, S s ->
-    winner s <> Some (opp p) /\
-    (winner s = None -> to_move s = p ->
-       exists m, In m (moves s) /\ S (step s m)) /\
-    (winner s = None -> to_move s = opp p ->
-       forall m, In m (moves s) -> S (step s m)).
-
-Definition safe (p : player) (s : state) : Prop :=
-  exists S, safe_set p S /\ S s.
-
-Inductive result := AWins | BWins | Draw.
-
-Definition has_result (r : result) (s : state) : Prop :=
-  match r with
-  | AWins => wins PA s
-  | BWins => wins PB s
-  | Draw => safe PA s /\ safe PB s
-  end.
-
-(** ** Consistency: the three results are mutually exclusive *)
 
 Lemma wins_not_safe : forall p s, wins p s -> safe (opp p) s -> False.
 Proof.
@@ -92,11 +55,3 @@ Proof.
   - exact (wins_not_safe PA s H2 (proj2 H1)).
   - exact (wins_not_safe PB s H2 (proj1 H1)).
 Qed.
-
-(** ** The statements this repository proves
-
-    [Solution.v] proves [has_result] for the results listed there, for each
-    starting player. *)
-
-Definition solves (r_a_first r_b_first : result) : Prop :=
-  has_result r_a_first (init PA) /\ has_result r_b_first (init PB).

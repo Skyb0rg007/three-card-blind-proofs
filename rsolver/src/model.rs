@@ -1,4 +1,4 @@
-//! The game model: a direct port of theories/Model.v (pre-Foundations
+//! The game model: a direct port of spec/Model.v (pre-Foundations
 //! damage rules only). Move lists come out in the same order as the
 //! extracted OCaml, which the differential tests rely on. Natural-number
 //! subtraction saturates at zero, as in Rocq.
@@ -335,69 +335,23 @@ fn cons<T: Clone>(x: &T, l: Vec<T>) -> Vec<T> {
     w
 }
 
-/// All merges of two lists that keep the order within each list.
-fn interleave<T: Clone>(xs: &[T], ys: &[T]) -> Vec<Vec<T>> {
-    match xs.split_first() {
-        None => vec![ys.to_vec()],
-        Some((x, xs1)) => {
-            fn go<T: Clone>(x: &T, xs: &[T], xs1: &[T], ys: &[T]) -> Vec<Vec<T>> {
-                match ys.split_first() {
-                    None => vec![xs.to_vec()],
-                    Some((y, ys1)) => {
-                        let mut out: Vec<Vec<T>> = interleave(xs1, ys).into_iter().map(|l| cons(x, l)).collect();
-                        out.extend(go(x, xs, xs1, ys1).into_iter().map(|l| cons(y, l)));
-                        out
-                    }
-                }
-            }
-            go(x, xs, xs1, ys)
-        }
-    }
-}
-
-fn insert_all<T: Clone>(x: &T, l: &[T]) -> Vec<Vec<T>> {
-    match l.split_first() {
-        None => vec![vec![x.clone()]],
-        Some((y, r)) => {
-            let mut out = vec![cons(x, l.to_vec())];
-            out.extend(insert_all(x, r).into_iter().map(|v| cons(y, v)));
-            out
-        }
-    }
-}
-
-fn permutations<T: Clone>(l: &[T]) -> Vec<Vec<T>> {
-    match l.split_first() {
-        None => vec![vec![]],
-        Some((x, r)) => permutations(r).iter().flat_map(|p| insert_all(x, p)).collect(),
-    }
-}
-
-fn blocker_orders(l: &[Blocker]) -> Vec<Vec<Blocker>> {
-    let ws: Vec<Blocker> = l.iter().copied().filter(|b| matches!(b, Blocker::BW(_))).collect();
-    let nt = l.iter().filter(|b| matches!(b, Blocker::BT)).count();
-    let ts = vec![Blocker::BT; nt];
-    permutations(&ws).iter().flat_map(|p| interleave(p, &ts)).collect()
-}
-
-fn arrangements_fuel(fuel: usize, nw: usize, ne: usize) -> Vec<Vec<Card>> {
-    if fuel == 0 {
+/// The distinct orders of `l`'s elements (Model.orders): each distinct
+/// element in the order of its last occurrence (`nodup`), first, followed
+/// by the orders of the rest with its first occurrence removed.
+fn orders<T: Clone + PartialEq>(l: &[T]) -> Vec<Vec<T>> {
+    if l.is_empty() {
         return vec![vec![]];
     }
     let mut out = vec![];
-    if nw > 0 {
-        out.extend(arrangements_fuel(fuel - 1, nw - 1, ne).into_iter().map(|l| cons(&Card::Walker, l)));
-    }
-    if ne > 0 {
-        out.extend(arrangements_fuel(fuel - 1, nw, ne - 1).into_iter().map(|l| cons(&Card::Elixir, l)));
+    for (i, x) in l.iter().enumerate() {
+        if l[i + 1..].contains(x) {
+            continue;
+        }
+        let mut rest = l.to_vec();
+        rest.remove(l.iter().position(|y| y == x).unwrap());
+        out.extend(orders(&rest).into_iter().map(|o| cons(x, o)));
     }
     out
-}
-
-fn arrangements(l: &[Card]) -> Vec<Vec<Card>> {
-    let nw = l.iter().filter(|c| **c == Card::Walker).count();
-    let ne = l.len() - nw;
-    arrangements_fuel(l.len(), nw, ne)
 }
 
 // ---- mana ----
@@ -494,7 +448,7 @@ fn block_moves(s: &State) -> Vec<Move> {
 }
 
 fn order_moves(s: &State) -> Vec<Move> {
-    let choices: Vec<Vec<Vec<Blocker>>> = s.cmb.blk.iter().map(|b| blocker_orders(b)).collect();
+    let choices: Vec<Vec<Vec<Blocker>>> = s.cmb.blk.iter().map(|b| orders(b)).collect();
     product(&choices).into_iter().map(Move::Order).collect()
 }
 
@@ -559,7 +513,7 @@ pub fn moves(s: &State) -> Vec<Move> {
         Pending::ChooseBlock => block_moves(s),
         Pending::ChooseOrder => order_moves(s),
         Pending::ChooseDamage => damage_moves(s),
-        Pending::ChooseShuffle(_, _, cards) => arrangements(cards).into_iter().map(Move::Arrange).collect(),
+        Pending::ChooseShuffle(_, _, cards) => orders(cards).into_iter().map(Move::Arrange).collect(),
         Pending::Over(_) => vec![],
     }
 }
