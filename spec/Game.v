@@ -4,7 +4,10 @@
     finitely many moves. A player is *safe* from a state if they can avoid
     losing forever: there is a set of states containing it that the opponent
     can never force them out of. The game is a draw when both players are
-    safe. *)
+    safe.
+
+    [wins] and [safe] quantify over [moves s] as it is: [Claims.never_stuck]
+    states that it is nonempty whenever the game has no winner yet. *)
 
 From Stdlib Require Import List.
 Import ListNotations.
@@ -17,7 +20,7 @@ Inductive wins (p : player) : state -> Prop :=
     winner s = None -> to_move s = p ->
     In m (moves s) -> wins p (step s m) -> wins p s
 | wins_theirs s :
-    winner s = None -> to_move s = opp p -> moves s <> [] ->
+    winner s = None -> to_move s = opp p ->
     (forall m, In m (moves s) -> wins p (step s m)) -> wins p s.
 
 (** [S] is a set of states from which [p] never loses. *)

@@ -101,7 +101,6 @@ Proof.
         apply wins_theirs.
         -- exact Hwt.
         -- rewrite (R_to_move H s t HR). exact Hm.
-        -- rewrite Emt, Hms. discriminate.
         -- intros m Hin. rewrite Emt in Hin.
            specialize (Hc m Hin). destruct (too_many ott (step s m)); [discriminate |].
            apply (IHf false (step s m)); [exact Hc |].

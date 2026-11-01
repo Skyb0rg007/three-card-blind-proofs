@@ -15,7 +15,7 @@ Proof. destruct p; discriminate. Qed.
 Lemma wins_not_safe : forall p s, wins p s -> safe (opp p) s -> False.
 Proof.
   intros p s Hw [S [HS Hs]].
-  induction Hw as [s Hwin | s m Hnone Hturn Hin Hw IH | s Hnone Hturn Hne Hall IH].
+  induction Hw as [s Hwin | s m Hnone Hturn Hin Hw IH | s Hnone Hturn Hall IH].
   - destruct (HS s Hs) as [Hnot _]. rewrite opp_involutive in Hnot. contradiction.
   - destruct (HS s Hs) as [_ [_ Hopp]].
     apply IH. apply Hopp; auto. rewrite opp_involutive. assumption.
@@ -34,11 +34,11 @@ Lemma wins_safe : forall p s, wins p s -> safe p s.
 Proof.
   intros p s Hw. exists (wins p). split; [| exact Hw].
   intros t Ht. split; [apply wins_winner; exact Ht |]. split.
-  - intros Hnone Hturn. inversion Ht as [t' Hwin | t' m Hnone' Hturn' Hin Hm | t' Hnone' Hturn' Hne Hall].
+  - intros Hnone Hturn. inversion Ht as [t' Hwin | t' m Hnone' Hturn' Hin Hm | t' Hnone' Hturn' Hall].
     + congruence.
     + exists m. auto.
     + exfalso. rewrite Hturn in Hturn'. symmetry in Hturn'. exact (opp_neq p Hturn').
-  - intros Hnone Hturn m Hin. inversion Ht as [t' Hwin | t' m' Hnone' Hturn' Hin' Hm | t' Hnone' Hturn' Hne Hall].
+  - intros Hnone Hturn m Hin. inversion Ht as [t' Hwin | t' m' Hnone' Hturn' Hin' Hm | t' Hnone' Hturn' Hall].
     + congruence.
     + exfalso. rewrite Hturn in Hturn'. exact (opp_neq p Hturn').
     + auto.

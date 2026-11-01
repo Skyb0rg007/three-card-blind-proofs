@@ -127,7 +127,7 @@ Qed.
 
 Lemma wins_bump : forall p k s, wins p s -> wins p (bump p k s).
 Proof.
-  intros p k s Hw. induction Hw as [s Hwin | s m Hnone Hturn Hin Hw IH | s Hnone Hturn Hne Hall IH].
+  intros p k s Hw. induction Hw as [s Hwin | s m Hnone Hturn Hin Hw IH | s Hnone Hturn Hall IH].
   - apply wins_over. rewrite winner_bump. exact Hwin.
   - apply wins_mine with m.
     + rewrite winner_bump. exact Hnone.
@@ -137,7 +137,6 @@ Proof.
   - apply wins_theirs.
     + rewrite winner_bump. exact Hnone.
     + rewrite to_move_bump. exact Hturn.
-    + rewrite moves_bump. exact Hne.
     + intros m Hin. rewrite moves_bump in Hin.
       rewrite step_bump; [apply IH; exact Hin | apply wins_winner; apply Hall; exact Hin].
 Qed.
@@ -162,7 +161,7 @@ Qed.
 Lemma wins_opp_bump : forall p k s, wins (opp p) (bump p k s) -> wins (opp p) s.
 Proof.
   intros p k s Hw. remember (bump p k s) as t eqn:Ht. revert s Ht.
-  induction Hw as [t Hwin | t m Hnone Hturn Hin Hw IH | t Hnone Hturn Hne Hall IH];
+  induction Hw as [t Hwin | t m Hnone Hturn Hin Hw IH | t Hnone Hturn Hall IH];
     intros s ->.
   - apply wins_over. rewrite winner_bump in Hwin. exact Hwin.
   - rewrite winner_bump in Hnone. rewrite to_move_bump in Hturn. rewrite moves_bump in Hin.
@@ -171,7 +170,7 @@ Proof.
       * apply wins_mine with m; auto. apply wins_over. exact E.
       * apply wins_mine with m; auto. apply IH. apply step_bump. congruence.
     + apply wins_mine with m; auto. apply IH. apply step_bump. congruence.
-  - rewrite winner_bump in Hnone. rewrite to_move_bump in Hturn. rewrite moves_bump in Hne.
+  - rewrite winner_bump in Hnone. rewrite to_move_bump in Hturn.
     apply wins_theirs; auto. intros m Hin. rewrite moves_bump in IH.
     destruct (winner (step s m)) as [w |] eqn:E.
     + destruct (player_eq_dec w (opp p)) as [-> | Hne'].
@@ -283,7 +282,7 @@ Qed.
 Theorem wins_thop : forall p s t, thop_le p s t -> wins p s -> wins p t.
 Proof.
   intros p s t Hle Hw. revert t Hle.
-  induction Hw as [s Hwin | s m Hnone Hturn Hin Hw IH | s Hnone Hturn Hne Hall IH];
+  induction Hw as [s Hwin | s m Hnone Hturn Hin Hw IH | s Hnone Hturn Hall IH];
     intros t Hle.
   - apply wins_over. rewrite (winner_thop _ _ _ Hle). exact Hwin.
   - apply wins_mine with m.
@@ -294,7 +293,6 @@ Proof.
   - apply wins_theirs.
     + rewrite (winner_thop _ _ _ Hle). exact Hnone.
     + rewrite (to_move_thop _ _ _ Hle). exact Hturn.
-    + rewrite (moves_thop_opp _ _ _ Hle Hturn). exact Hne.
     + intros m Hin. rewrite (moves_thop_opp _ _ _ Hle Hturn) in Hin.
       apply (IH m Hin). apply step_thop. exact Hle.
 Qed.

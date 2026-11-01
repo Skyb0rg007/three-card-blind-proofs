@@ -41,6 +41,10 @@ This repo contains a [Rocq][] mechanization of the problem and a proof of the so
 | B plays first | B can force a win |
 | A plays first | A can't force a win (B never loses; whether B can force a win is still open) |
 
+Rocq also proves that the game never gets stuck: in every position without a
+winner, the player to move has a legal move (`never_stuck` in
+`spec/Claims.v`).
+
 `STRATEGY.md` describes, in plain Magic terms, how B wins when B plays first.
 
 ## Auditing the result
