@@ -612,8 +612,10 @@ let win_reach dir starter life =
   let i0 = Option.get (index t (key t.h t.tt s0)) in
   let a, b = recs w i0 in
   let rec first p = if p >= b then failwith "win-reach: no opening record" else if rval w p <= life then rank w i0 p else first (p + 1) in
+  (* each record maps to the record it was first reached from *)
   let used = Hashtbl.create 100_000 and queue = Queue.create () in
-  let add i r = if not (Hashtbl.mem used (i, r)) then (Hashtbl.replace used (i, r) (); Queue.push (i, r) queue) in
+  let from = ref (-1, -1) in
+  let add i r = if not (Hashtbl.mem used (i, r)) then (Hashtbl.replace used (i, r) !from; Queue.push (i, r) queue) in
   add i0 (first a);
   let memo = H.create 1024 in
   let rec ok r root s =
@@ -650,13 +652,14 @@ let win_reach dir starter life =
       | PB -> collect r false (step s (List.find (next r s) (moves s)))
       | PA -> List.iter (fun m -> collect r false (step s m)) (moves s)
   in
-  let maxv = ref 0 and maxa = ref 0 and maxb = ref 0 and bad = ref 0 and n = ref 0 in
+  let maxv = ref 0 and maxa = ref 0 and maxb = ref 0 and bad = ref 0 and n = ref 0 and top = ref (i0, 0) in
   while not (Queue.is_empty queue) do
     let i, r = Queue.pop queue in
+    from := (i, r);
     match record w i r with
     | None -> incr bad
     | Some v ->
-      maxv := max !maxv v;
+      if v > !maxv then (maxv := v; top := (i, r));
       List.iter (fun s ->
           let s = { s with sideB = { s.sideB with life = v } } in
           List.iter (fun wk -> maxa := max !maxa wk.counters) s.sideA.bf;
@@ -668,7 +671,16 @@ let win_reach dir starter life =
       if !n mod 100_000 = 0 then Printf.printf "  %d records, %d queued\n%!" !n (Queue.length queue)
   done;
   Printf.printf "%d records reached: B needs at most %d life; A's largest Walker %d (huge %d), B's %d; %d failed\n"
-    (Hashtbl.length used) !maxv !maxa t.h !maxb !bad
+    (Hashtbl.length used) !maxv !maxa t.h !maxb !bad;
+  (* the chain of records from the opening to the first one needing the most *)
+  let rec chain ir acc = if fst ir < 0 then acc else chain (Hashtbl.find used ir) (ir :: acc) in
+  print_endline "chain to the first record needing the most life:";
+  List.iteri (fun n (i, r) ->
+      let s = Fix.of_key (Fix.key_at t.sv i) in
+      let v = Option.value (record w i r) ~default:(-1) in
+      Printf.printf "%3d level %d round %d, B needs %d | %s\n" n (r / level + 1) (r mod level) v
+        (String.concat " | " (List.tl (String.split_on_char '\n' (Show.state s)))))
+    (chain !top [])
 
 (* Cost probe for checking win records inside Rocq: on the first [n] records
    reached from the opening, count search nodes with the memoised oracle and

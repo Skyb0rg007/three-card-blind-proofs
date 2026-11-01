@@ -683,3 +683,17 @@ because A's Walkers grow without bound: an A-safe proof has to argue about
 unbounded sizes (a symbolic invariant), and no finite A-safe table or
 certificate in the style of the B results can exist.
 
+**A's hardest line is a stall.** `win-reach` also prints the chain of
+records from the opening to the first one needing the most life. On the
+relaxed `ot` 40 table (B from 18) it is 172 turn starts long. After an
+opening skirmish, A is on 11 life with Walkers 4 and 11, and B holds a
+6-counter Walker and Elixir. Then nobody attacks for about 70 rounds: B
+banks 5 life per Elixir cycle (its life, and the record it needs, climb from
+20 to 200), and A grows its bigger Walker from 11 to 40 (about 0.4 a round).
+The line ends only when that Walker reaches the clamp at 41, after which the
+relaxed rules let B take its hits. In the real game nothing ends this stall,
+so this branch is a draw unless one side can break it profitably. That gives
+the A-safe proof a concrete target: A's fortress (a small Walker and a big
+one that keeps growing, both at home) against B's Walker, Elixir and banked
+life, with an invariant saying B can't break it at any life.
+
