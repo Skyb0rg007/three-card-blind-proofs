@@ -177,7 +177,7 @@ pub fn run_table(c: &Cfg, dir: &str, every: usize) {
         let (prog, nn) = fix::compile(c, &tgt, &st);
         ct += t1.elapsed().as_secs_f64();
         let t1 = std::time::Instant::now();
-        let p = fix::pack(&prog, nn);
+        let p = fix::pack(&prog, nn, c.big);
         pt += t1.elapsed().as_secs_f64();
         tally(&mut t, &parse(&prog, nn));
         let nt = fix::packed_targets(&p).count() as u64;

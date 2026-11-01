@@ -2,14 +2,14 @@
 //! (Fix.reach and Fix.solve), with threads instead of forked workers. The
 //! directory layout is the OCaml solver's: dig, keys, vals, meta.
 
-use crate::fix::{self, Cfg, INF, NINF, SENT};
+use crate::fix::{self, Cfg, Line, INF, LINF, LNINF, NINF, SENT};
 use crate::model::*;
 use memmap2::{Mmap, MmapMut};
 use rustc_hash::FxHashMap as HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering::Relaxed};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -133,7 +133,7 @@ pub fn reach(c: &Cfg, s0: &State, dir: &Path) -> (Solver, Programs) {
                             let (id, key) = &layer[i];
                             let s = fix::of_key(&fix::with_life(key, SENT));
                             let (prog, nn) = fix::compile(c, &tgt, &s);
-                            let p = fix::pack(&prog, nn);
+                            let p = fix::pack(&prog, nn, c.big);
                             out.at.push((*id, out.bytes));
                             out.file.write_all(&p).unwrap();
                             out.bytes += p.len() as u64;
@@ -505,6 +505,230 @@ pub fn solve(c: &Cfg, sv: &Solver, progs: Programs, start: i64) {
         println!("  SPOT CHECK FAILED at {bad} positions");
     } else {
         println!("  spot check passed");
+    }
+}
+
+/// A line in one atomic word: c (as `to32`) above, b below.
+fn lenc(v: Line) -> i64 {
+    ((fix::to32(v.c) as i64) << 32) | (v.b as u32 as i64)
+}
+fn ldec(x: i64) -> Line {
+    Line { c: fix::of32((x >> 32) as i32), b: x as i32 as i64 }
+}
+
+/// The A-safe fixed point in BIG mode (`TCB_BIG=1`): values are lines
+/// (`fix::Line`), every position starts at INF, and each evaluation keeps
+/// the componentwise min of the old line and the new one, so values only
+/// decrease. When a sweep finds nothing dirty, every evaluated position has
+/// v <= F(v): the table justifies itself. A position equal to its value one
+/// A-life level down is final, as in `solve` (that value is sound for the
+/// higher level by A-life monotonicity). Writes c to the table's values
+/// and returns b per position (digest order).
+pub fn solve_big(c: &Cfg, sv: &Solver, progs: Programs) -> Vec<i8> {
+    let t0 = Instant::now();
+    let (n, nb) = (sv.n, sv.nb);
+    assert!(c.big && !c.up() && !sv.pinned);
+    let work: Vec<AtomicI64> = (0..n).map(|_| AtomicI64::new(lenc(LINF))).collect();
+    let wget = |i: usize| ldec(work[i].load(Relaxed));
+    let wset = |i: usize, v: Line| work[i].store(lenc(v), Relaxed);
+    let bounds = std::env::var("TCB_NOBOUND").ok().as_deref() != Some("1");
+    let w = jobs().min(nb.max(1));
+    let deps = Deps::build(sv, &progs, w);
+    let dirty: Vec<AtomicBool> = (0..nb).map(|_| AtomicBool::new(false)).collect();
+    let mut evals = 0u64;
+    for slot in 0..sv.nl {
+        let l = sv.life_of_slot(slot) as i64;
+        let first = slot * nb;
+        let floor = |j: usize| if slot > 0 { wget(first - nb + j) } else { LNINF };
+        let fin = |j: usize| bounds && wget(first + j) == floor(j);
+        let value = |x: i64| -> Line {
+            let b = (x >> 5) as usize;
+            let u = x & 31;
+            if l - u < 1 { LNINF } else { wget(((l - u - 1) as usize) * nb + b) }
+        };
+        for j in 0..nb {
+            dirty[j].store(!fin(j), Relaxed);
+        }
+        let mut sweeps = 0;
+        loop {
+            sweeps += 1;
+            let forward = sweeps & 1 == 1;
+            let ev: u64 = std::thread::scope(|sc| {
+                let hs: Vec<_> = (0..w)
+                    .map(|k| {
+                        let (value, fin, progs, dirty, deps, wget, wset) = (&value, &fin, &progs, &dirty, &deps, &wget, &wset);
+                        sc.spawn(move || {
+                            let (lo, hi) = chunk(nb, w, k);
+                            let (mut nv, mut tv) = (Vec::new(), Vec::new());
+                            let mut ev = 0u64;
+                            for x in lo..hi {
+                                let j = if forward { x } else { lo + hi - 1 - x };
+                                if !dirty[j].swap(false, Relaxed) || fin(j) {
+                                    continue;
+                                }
+                                ev += 1;
+                                let v = c.norm_big(fix::run_packed_big(c, l, value, progs.prog(j), &mut nv, &mut tv));
+                                let old = wget(first + j);
+                                let v = fix::lmin(old, v);
+                                if v != old {
+                                    wset(first + j, v);
+                                    for &d in deps.of(j) {
+                                        dirty[d as usize].store(true, Relaxed);
+                                    }
+                                }
+                            }
+                            ev
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).sum()
+            });
+            evals += ev;
+            if ev == 0 {
+                break;
+            }
+        }
+        let good = (0..nb).filter(|&j| wget(first + j) != LNINF).count();
+        println!(
+            "  A life {l}: {nb} positions ({good} not lost for the protagonist), {sweeps} sweeps, {evals} evaluations so far ({:.1}s)",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    let mut beta = vec![0i8; n];
+    for slot in 0..sv.nl {
+        for (id, &b) in progs.perm.iter().enumerate() {
+            let v = wget(slot * nb + id);
+            sv.set(slot * nb + b as usize, v.c);
+            beta[slot * nb + b as usize] = v.b as i8;
+        }
+    }
+    drop(work);
+    let files = progs.maps.len();
+    drop(progs);
+    for k in 0..files {
+        let _ = fs::remove_file(sv.dir.join(format!("prog-{k}")));
+    }
+    // spot check against direct evaluation: v <= F(v) componentwise (the
+    // certificate condition), except possibly at positions equal to their
+    // value one level down; and how often v = F(v)
+    let line = |i: usize| Line { c: sv.get(i), b: beta[i] as i64 };
+    let (bad, badfin, eq, tot) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|sc| {
+        for _ in 0..w {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(500, Relaxed);
+                if i >= n {
+                    break;
+                }
+                let mut lookup = |k: &[u8]| line(sv.id(k).expect("turn start not in the table"));
+                let f = c.norm_big(fix::eval_turn_big(c, &mut lookup, &fix::of_key(&sv.key_at(i))));
+                let v = line(i);
+                tot.fetch_add(1, Relaxed);
+                if f == v {
+                    eq.fetch_add(1, Relaxed);
+                }
+                if fix::lmin(v, f) != v {
+                    if bounds && i >= nb && line(i - nb) == v {
+                        badfin.fetch_add(1, Relaxed);
+                    } else {
+                        let k = bad.fetch_add(1, Relaxed);
+                        if k < 5 {
+                            println!("  spot check: position {i}: value {v:?}, one step {f:?}");
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let (bad, badfin, eq, tot) = (bad.into_inner(), badfin.into_inner(), eq.into_inner(), tot.into_inner());
+    println!("  spot check: {tot} positions, v = F(v) at {eq}, v <= F(v) fails at {bad} (and at {badfin} final from the level below)");
+    if bad > 0 {
+        println!("  SPOT CHECK FAILED at {bad} positions");
+    } else {
+        println!("  spot check passed");
+    }
+    beta
+}
+
+/// BIG-mode statistics: positions with a BIG Walker, the distribution of
+/// b, and how many BIG positions have c >= 20; at every A-life level and at
+/// A life 20, with a breakdown at A life 20 by B's Walker and Thopters.
+pub fn big_stats(c: &Cfg, sv: &Solver, beta: &[i8]) {
+    let nb = sv.nb;
+    let k = c.big_k();
+    let st: Vec<State> = (0..nb).map(|b| fix::of_key(&fix::with_life(sv.base_key(b), 20))).collect();
+    let isbig: Vec<bool> = st.iter().map(|s| s.side_a.bf.iter().any(|w| w.counters == k)).collect();
+    let nbig = isbig.iter().filter(|&&x| x).count();
+    println!("BIG: K = {k}; {nbig} of {nb} bases have a BIG Walker");
+    for (name, lo) in [("all levels", 0), ("A life 20", sv.nl - 1)] {
+        let mut hist = [0u64; fix::BMAX as usize + 1];
+        let (mut pos, mut lost, mut inf, mut c20) = (0u64, 0u64, 0u64, 0u64);
+        let (mut nonbig, mut nonbig_lost, mut nonbig_beta) = (0u64, 0u64, 0u64);
+        for slot in lo..sv.nl {
+            for b in 0..nb {
+                let i = slot * nb + b;
+                let v = sv.get(i);
+                if !isbig[b] {
+                    nonbig += 1;
+                    nonbig_beta += (beta[i] != 0) as u64;
+                    nonbig_lost += (v <= NINF) as u64;
+                    continue;
+                }
+                pos += 1;
+                if v <= NINF {
+                    lost += 1;
+                    continue;
+                }
+                if v >= INF {
+                    inf += 1;
+                } else {
+                    hist[beta[i] as usize] += 1;
+                }
+                c20 += (v >= 20) as u64;
+            }
+        }
+        let h: Vec<String> = hist.iter().enumerate().map(|(b, x)| format!("{b}:{x}")).collect();
+        println!(
+            "BIG ({name}): {pos} BIG positions, {lost} lost, {inf} safe at any B life; beta of the rest {}; c >= 20 (or any) at {c20}",
+            h.join(" ")
+        );
+        println!("BIG ({name}): {nonbig} non-BIG positions, {nonbig_lost} lost, {nonbig_beta} with beta != 0");
+    }
+    // A life 20, BIG positions: (positions, lost, c >= 20) by B's Walker
+    // and by B's Thopters
+    let slot = sv.nl - 1;
+    let huge = c.ot + 1;
+    let mut by_w: std::collections::BTreeMap<String, (u64, u64, u64)> = Default::default();
+    let mut by_t: std::collections::BTreeMap<u32, (u64, u64, u64)> = Default::default();
+    for b in 0..nb {
+        if !isbig[b] {
+            continue;
+        }
+        let v = sv.get(slot * nb + b);
+        let s = &st[b];
+        let bw = match s.side_b.bf.first() {
+            None => "none".to_string(),
+            Some(w) if w.counters >= huge => "huge".to_string(),
+            Some(w) => format!("{:02}", w.counters),
+        };
+        let bt = s.side_b.thop_u + s.side_b.thop_t;
+        for e in [by_w.entry(bw).or_default(), by_t.entry(bt).or_default()] {
+            e.0 += 1;
+            if v <= NINF {
+                e.1 += 1;
+            } else if v >= 20 {
+                e.2 += 1;
+            }
+        }
+    }
+    println!("BIG at A life 20, by B's Walker: (positions, lost, c >= 20)");
+    for (k, v) in &by_w {
+        println!("  B Walker {k}: {v:?}");
+    }
+    println!("BIG at A life 20, by B's Thopters: (positions, lost, c >= 20)");
+    for (k, v) in &by_t {
+        println!("  B Thopters {k}: {v:?}");
     }
 }
 
