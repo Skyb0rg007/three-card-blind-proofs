@@ -1,10 +1,13 @@
 (** * The claims of [spec/Claims.v], proved
 
-    Each claim rests on a certificate: a table of positions computed by the
-    solver, in [proofs/bfirst] and [proofs/afirst]. Rocq runs the checker of
-    [WinCert.v] (wins) or [Checker.v] (safety) on every entry, in [vm_compute]
-    ([Chunk*.v]). The checkers are proved sound for any table at all
-    ([Packed.v] ties them to the packed tables), so the tables need no trust. *)
+    The facts about the model ([never_stuck], [no_idle_moves],
+    [init_well_formed], [preservation]) are proved directly. Each result
+    about an opening rests on a certificate: a table of positions computed by
+    the solver, in [proofs/bfirst] and [proofs/afirst]. Rocq runs the checker
+    of [WinCert.v] (wins) or [Checker.v] (safety) on every entry, in
+    [vm_compute] ([Chunk*.v]). The checkers are proved sound for any table at
+    all ([Packed.v] ties them to the packed tables), so the tables need no
+    trust. *)
 
 From TCB.Spec Require Import Model Game Claims.
 From TCB.Proofs Require Import GameFacts Progress Idle Preservation.

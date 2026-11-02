@@ -36,18 +36,37 @@ The official channel made a YouTube video on the topic [here](https://youtu.be/h
 
 This repo contains a [Rocq][] mechanization of the problem and a proof of the solution.
 
-| Opening | Result |
-|---|---|
-| B plays first | B can force a win |
-| A plays first | A can't force a win (B never loses; whether B can force a win is still open) |
+| Opening | Result | Status |
+|---|---|---|
+| B plays first | B can force a win | proved in Rocq |
+| A plays first | A can't force a win | proved in Rocq |
+| A plays first | B can't force a win, so the game is a draw | found by the solver; the Rocq proof is in progress |
 
-Rocq also proves that the game never gets stuck: in every position without a
-winner, the player to move has a legal move (`never_stuck` in
-`spec/Claims.v`). It also proves that legal moves keep every position
-well formed: no card is created or lost, and combat only refers to Walkers and
-Thopters that exist (`preservation`), and that every legal move changes the
-position, so nobody can stall by repeating a move that does nothing
-(`no_idle_moves`).
+Rocq also proves three facts about the model itself (all in `spec/Claims.v`):
+
+- the game never gets stuck: in every position without a winner, the player
+  to move has a legal move (`never_stuck`);
+- legal moves keep every position well formed: no card is created or lost,
+  and combat only refers to Walkers and Thopters that exist (`preservation`);
+- every legal move changes the position, so nobody can stall by repeating a
+  move that does nothing (`no_idle_moves`).
+
+### The A-first draw
+
+The missing half is that A never loses going first. The solver finds this
+with every legal B move: A is safe up to B life 20, which is exactly B's
+starting life. The table behind it treats one of A's Walkers as unbounded:
+it stands for K + n counters for every n ≥ 0, and each position stores a line
+c + b n, the most life B can have there with A still safe.
+
+The Rocq side of that argument is already proved for any table:
+`proofs/core/CheckerA.v` checks line-valued tables, and
+`proofs/core/SaturationA.v` proves the checker sound, both for A's unbounded
+Walker and for B's Walker saturated at a fixed size (closed under the global
+context). What remains is computation: checking every entry of the solver's
+table, packing the table into Rocq as `proofs/afirst` already is, and
+stating the claim `safe PA (init PA)` in `spec/Claims.v`. Until then this half
+rests on the solver. `REDUCTION.md` (the end) has the details.
 
 `STRATEGY.md` describes, in plain Magic terms, how B wins when B plays first.
 
@@ -68,8 +87,13 @@ The repository is split so that you only have to read one directory.
 - **`proofs/`: let Rocq check this.** `results/Results.v` proves each claim
   of `spec/Claims.v` with no hypotheses. Everything else in `proofs/`
   supports it:
-  - `core/Checker.v` and `core/WinCert.v` define checkers for safety and for
-    wins, and prove them sound for any table of positions at all.
+  - `core/Checker.v` and `core/WinCert.v` define checkers for B's safety and
+    for wins, and prove them sound for any table of positions at all
+    (`core/Saturation.v` proves the simulation facts `Checker.v` needs).
+    `core/CheckerA.v` and `core/SaturationA.v` do the same for A's safety,
+    with line-valued tables.
+  - `core/Progress.v`, `core/Preservation.v` and `core/Idle.v` prove the facts
+    about the model: `never_stuck`, `preservation` and `no_idle_moves`.
   - `core/Packed.v` stores such a table compactly in primitive arrays, and proves
     that if every entry passes the checker, the claim holds.
   - `bfirst/` and `afirst/` hold the two tables (`Data.v.xz`, computed by the

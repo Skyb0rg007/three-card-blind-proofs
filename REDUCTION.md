@@ -1,7 +1,17 @@
 # Reducing the game to a finite one
 
-Working hypothesis: **the game is a draw** for both starting players. A
-depth-bounded search can never show this. A draw needs two separate facts:
+Where things stand:
+
+- **B first: B wins.** Certified, and proved in Rocq (`b_first_b_wins`).
+- **A first: A can't win.** B is safe; certified, and proved in Rocq
+  (`a_first_b_safe`).
+- **A first: B can't win either, so the game is a draw.** The solver finds
+  A safe up to B life 20, exactly B's starting life, with every legal B move
+  (R7 and the last section). The checker for that kind of table and its
+  soundness are proved in Rocq; checking the table itself is in progress.
+
+A depth-bounded search can never show a draw. A draw needs two separate
+facts:
 
 - **B-safe:** B has a strategy that never loses (`safe PB` in `Game.v`).
 - **A-safe:** A has a strategy that never loses (`safe PA`).
@@ -106,6 +116,14 @@ instead.
   one dying is already a loss), so A never has more than `2 ot` Thopters
   beyond those it starts with. With `ott` at least that, the rule never
   fires and costs B nothing.
+
+**Proved in Rocq, in both directions.** With B as protagonist, A's Walkers
+saturate: `proofs/core/Saturation.v` proves the simulation facts that
+`Checker.cert_safe` needs. With A as protagonist, B's Walker saturates:
+`proofs/core/SaturationA.v` proves the same for `CheckerA.cert_safe`. In
+both, a huge event or too many opposing Thopters is a loss in the checker,
+and the proof shows that every other step of the real game is matched by a
+step of the saturated one.
 
 ## R5. A's life pinned at 20 (B-safe only, sound by monotonicity)
 
@@ -360,8 +378,38 @@ counter is never seen until the delayed pump adds it too.
   arrives before any damage it could prevent, and the shuffle still comes
   before B's next draw. *Mimic.* Upkeep is different: shuffling before the
   draw step lets B draw a shuffled-in card that turn, so it is kept.
-These arguments are written, not mechanized. Every B win that counts is
-still re-solved with `TCB_FULLOPP=1`.
+These arguments are written, not mechanized, and no result depends on them:
+every result that counts gives the opponent every legal move
+(`TCB_FULLOPP=1`), and the Rocq checkers do the same.
+
+## R7. A's unbounded Walker (A-safe, proved sound)
+
+A's defence going first depends on growth: B can bank 5 life per Elixir
+cycle forever, and A stays safe only if its threat keeps growing too. So any
+cap on A's own Walkers (R3) loses positions the real A holds, and every
+capped A-safe check stalls below 20. `TCB_BIG=1` replaces the cap.
+
+- An A Walker that reaches K = `t` + 1 counters becomes **BIG**: it is
+  stored at K and stands for K + n counters, for every n ≥ 0 at once.
+- K is above every total of B's (B's Walker saturates at `ot` + 1, R4, and
+  B has at most `ott` Thopters), so BIG never dies, and every fight it is in
+  comes out the same for all n. The only thing n changes is the damage BIG
+  deals to B when unblocked.
+- So a position's value is a **line** (c, b): A is safe whenever B's life
+  is at most c + b n. An unblocked hit adds 1 to b. A pump on BIG reads the
+  next position at n + 1. A pump that makes a new BIG reads it at n = 0. A
+  pump that would make a second BIG is not allowed.
+
+`proofs/core/CheckerA.v` checks a table of lines: it runs one turn of the
+real model and moves the required line along each edge as above. It
+gives B every legal move, and treats B's death as a line that is at most 0
+for every n. `proofs/core/SaturationA.v` proves that a real state whose BIG
+Walker has K + n counters behaves like the checker's state: the same moves,
+the same steps except for B's life, which moves by n more on a hit. The
+final theorems, `certified_safe_a` and `certified_opening_a`, are closed
+under the global context. They need only `Hb < K` and `1 <= Hb` (`Hb` is B's
+saturation size). So any line-valued table whose entries all pass the
+checker, and whose opening line reaches 20, proves `safe PA (init PA)`.
 
 ## Results so far
 
@@ -425,7 +473,8 @@ tt 10, with every legal A move, gives exactly 20. For A, capped Walkers and
 Thopters make the check collapse onto the win check (A-safe = A-win = 15 at
 6/6, 10/10 and 14/14), because a long game always reaches a cap and the cap
 is a loss for the protagonist. This is the growth equilibrium described
-below.
+below. (Resolved since: R7 removes A's cap, and with A allowed to keep
+Thopters home, A-safe reaches exactly 20. See the last two sections.)
 
 **B first is different.** With caps 14, B wins with B life ≥ 17 against
 every legal A move, and the win is certified. The earlier "no B win" at tt
@@ -1104,20 +1153,23 @@ here: A's single-line choice needs the extra Thopter), the sound check
 (single line per A node at `TCB_BIGREF` 20, strict R4, A capped at 20 with
 one BIG Walker, A's Thopters cut at 8) already reaches B life 20, and so it
 does with B's Walker capped at 6 and every legal B move. That is the first
-A-safe value of 20 from the A-first opening that uses only sound rules. It
-still rests on the solver and on the BIG argument, which nothing checks yet
-beyond the spot check and `TCB_BIGCHECK`. B starts on 20, so B couldn't force
-a win, and with the certified B-safe (A can't force a win) the A-first game
-would be a draw. There is no margin: the value is exactly 20. What a proof
-still needs:
-- **A certificate checker for line values.** Rocq's `Checker.v` is scalar.
-  The BIG abstraction needs its own soundness argument in Rocq: a Walker
-  above every B total behaves the same for all n except in unblocked damage
-  to B, and lines are lower bounds. Then per-position lines need checking
-  (v ≤ F(v) componentwise), and the R4 saturation of B's Walker and Thopters
-  needs a proof for A as protagonist, the mirror of the one the B-safe
-  certificate uses.
-- **Every legal B move** stays on (`TCB_FULLOPP=1`), as in the last row, so
-  that R6 isn't needed.
-- **The table itself:** about 45M positions (2.25M bases), small enough to
-  export like the B-safe tables.
+A-safe value of 20 from the A-first opening that uses only sound rules. B
+starts on 20, so B can't force a win, and with the certified B-safe (A can't
+force a win) the A-first game is a draw. There is no margin: the value is
+exactly 20.
+
+## Status of the A-first draw proof
+
+- **The checker and its soundness: done.** `CheckerA.v` and `SaturationA.v`
+  (R7) prove, closed under the global context, that a line-valued table
+  that passes the checker proves A safe. This covers the BIG abstraction and
+  R4 with A as protagonist. Every legal B move is on, so R6 isn't needed.
+- **The table.** Re-solved without the A-life bound (`TCB_NOBOUND=1`): the
+  solver's `fin` bound copies a level's values from the level below by
+  A-life monotonicity, which the checker can't use at an exact A life. The
+  opening's line is still c = 20, b = 0.
+- **Checking it: in progress.** The extracted `CheckerA.check_node` runs
+  over every entry reachable from the opening (like `certify` for the
+  B-safe table).
+- **Then:** pack the reached entries into Rocq as `proofs/afirst` is, state
+  `safe PA (init PA)` in `spec/Claims.v` and prove it in `Results.v`.
