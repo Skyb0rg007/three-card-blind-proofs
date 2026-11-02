@@ -217,8 +217,12 @@ Definition big_rel (n : nat) (w w' : walker) : Prop :=
   ((w.(counters) = K /\ w'.(counters) = (K + n)%nat) \/
    (w.(counters) < K /\ w'.(counters) = w.(counters))%nat).
 
+(** The Walkers in [l] with exactly [K] counters. *)
+Definition bigs (l : list walker) : nat := length (filter (fun w => Nat.eqb w.(counters) K) l).
+
 (** A's side: equal except for the BIG Walker, fewer Thopters and the
-    graveyard. A has no Elixir anywhere. Without a BIG Walker, [n] is 0. *)
+    graveyard. A has no Elixir anywhere. Without a BIG Walker, [n] is 0.
+    There is at most one BIG Walker: [n] describes a single Walker. *)
 Definition sideA_rel (n : nat) (a a' : side) : Prop :=
   a.(life) = a'.(life) /\ a.(city) = a'.(city) /\ a.(pool) = a'.(pool) /\
   a.(hand_w) = a'.(hand_w) /\
@@ -226,7 +230,7 @@ Definition sideA_rel (n : nat) (a a' : side) : Prop :=
   a.(elixir_bf) = false /\ a'.(elixir_bf) = false /\
   Forall (eq CWalker) a.(library) /\ a.(library) = a'.(library) /\
   Forall2 (big_rel n) a.(bf) a'.(bf) /\
-  (Forall (fun w => w.(counters) <> K) a.(bf) -> n = O) /\
+  (Forall (fun w => w.(counters) <> K) a.(bf) -> n = O) /\ (bigs a.(bf) <= 1)%nat /\
   (a.(thop_u) <= a'.(thop_u))%nat /\ (a.(thop_t) <= a'.(thop_t))%nat.
 
 (** B's side: equal except for life (not related here) and saturated
@@ -235,10 +239,13 @@ Definition sideB_rel (b b' : side) : Prop :=
   Forall2 (walker_rel Hb) b.(bf) b'.(bf) /\
   set_bf [] (set_life 0 b) = set_bf [] (set_life 0 b').
 
+(** No Walker attacks twice, so an unblocked BIG Walker deals its extra
+    [n] once. *)
 Definition RA (n : nat) (s t : state) : Prop :=
   s.(active) = t.(active) /\ s.(first_turn) = t.(first_turn) /\
   s.(cmb) = t.(cmb) /\ s.(pend) = t.(pend) /\ no_a_shuffle s.(pend) /\
-  sideA_rel n s.(sideA) t.(sideA) /\ sideB_rel s.(sideB) t.(sideB).
+  sideA_rel n s.(sideA) t.(sideA) /\ sideB_rel s.(sideB) t.(sideB) /\
+  NoDup s.(cmb).(atk).
 
 Lemma RA_winner : forall n s t, RA n s t -> winner t = winner s.
 Proof. intros n s t (_ & _ & _ & E & _). unfold winner. rewrite E. reflexivity. Qed.
