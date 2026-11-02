@@ -1168,8 +1168,13 @@ exactly 20.
   solver's `fin` bound copies a level's values from the level below by
   A-life monotonicity, which the checker can't use at an exact A life. The
   opening's line is still c = 20, b = 0.
-- **Checking it: in progress.** The extracted `CheckerA.check_node` runs
-  over every entry reachable from the opening (like `certify` for the
-  B-safe table).
+- **Checking it: done.** The extracted `CheckerA.check_node`
+  (`main.exe certify-a`) passes on all 5,879,511 entries reachable from the
+  opening, 0 failures, in two passes (the second with the lookup restricted
+  to exactly those entries, as Rocq will have it). The first run found one
+  place where the checker was stricter than the solver: after a pump on BIG,
+  n is at least 1, but lines were compared for every n ≥ 0. `check_node`
+  now carries that lower bound `lo` (0 at an entry, +1 per pump on BIG, 0 on
+  a new BIG) and compares lines for n ≥ lo.
 - **Then:** pack the reached entries into Rocq as `proofs/afirst` is, state
   `safe PA (init PA)` in `spec/Claims.v` and prove it in `Results.v`.

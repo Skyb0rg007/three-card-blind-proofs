@@ -63,10 +63,12 @@ The Rocq side of that argument is already proved for any table:
 `proofs/core/CheckerA.v` checks line-valued tables, and
 `proofs/core/SaturationA.v` proves the checker sound, both for A's unbounded
 Walker and for B's Walker saturated at a fixed size (closed under the global
-context). What remains is computation: checking every entry of the solver's
-table, packing the table into Rocq as `proofs/afirst` already is, and
-stating the claim `safe PA (init PA)` in `spec/Claims.v`. Until then this half
-rests on the solver. `REDUCTION.md` (the end) has the details.
+context). The checker, extracted to OCaml, passes on all 5.88M table entries
+reachable from the opening, and the opening's line is c = 20, b = 0. What
+remains is to pack that table into Rocq as `proofs/afirst` already is, so
+that Rocq runs the check itself, and to state the claim `safe PA (init PA)`
+in `spec/Claims.v`. Until then this half rests on the extracted check.
+`REDUCTION.md` (the end) has the details.
 
 `STRATEGY.md` describes, in plain Magic terms, how B wins when B plays first.
 
