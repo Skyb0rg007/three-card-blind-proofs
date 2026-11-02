@@ -26,6 +26,12 @@ let a_policy kind k =
   | "deterM" -> Policy.with_lookahead ~mine:Reduce.a_macro ~d:k2 (Policy.a_deter ~g:(env_int "TCB_G" 3) ~x:k)
   | _ -> Policy.a_chip ~chip:k
 
+(* CheckerA's parameters for a BIG A-safe table solved with T, TCB_OT and
+   TCB_OTT, TT: K = T + 1, Hb = TCB_OT + 1; M is B's life in entries. *)
+let a_params () =
+  Certifya.{ k = env_int "TCB_K" 21; hb = env_int "TCB_HB" 7; ott = env_int "TCB_OTT" 6; tt = env_int "TCB_TT" 8;
+             m = env_int "TCB_M" 200; fuel = env_int "TCB_FUEL" 1_000_000 }
+
 let usage () =
   prerr_endline
     "usage: main bfs|rbfs A|B TURNS\n\
@@ -442,6 +448,9 @@ let () =
     Certify.win_line dir (pl starter) (int_of_string life) (int_of_string n)
   | [| _; "win-cost"; dir; starter; n |] -> Certify.win_cost dir (pl starter) (int_of_string n)
   | [| _; "certify-debug"; dir; hex; v |] -> Certify.debug dir hex (int_of_string v)
+  | [| _; "certify-a"; dir; starter; out |] -> Certifya.run dir (pl starter) out (a_params ())
+  | [| _; "certify-a-debug"; dir; hex; c; b |] ->
+    Certifya.debug dir hex (int_of_string c) (int_of_string b) (a_params ())
   | [| _; "walk"; seed; steps |] -> Walk.run (int_of_string seed) (int_of_string steps)
   | [| _; "walk"; seed; steps; "bias" |] -> Walk.run ~bias:true (int_of_string seed) (int_of_string steps)
   | [| _; "fix"; mode; who; t; tt; lmax; starter |] -> run mode who t tt lmax (init (pl starter))
