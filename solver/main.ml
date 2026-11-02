@@ -449,6 +449,8 @@ let () =
   | [| _; "win-cost"; dir; starter; n |] -> Certify.win_cost dir (pl starter) (int_of_string n)
   | [| _; "certify-debug"; dir; hex; v |] -> Certify.debug dir hex (int_of_string v)
   | [| _; "certify-a"; dir; starter; out |] -> Certifya.run dir (pl starter) out (a_params ())
+  | [| _; "certify-a-export"; entries; starter; outdir; chunks |] ->
+    Certifya.export entries (pl starter) ~outdir ~chunks:(int_of_string chunks) (a_params ())
   | [| _; "certify-a-debug"; dir; hex; c; b |] ->
     Certifya.debug dir hex (int_of_string c) (int_of_string b) (a_params ())
   | [| _; "certify-a-levels"; dir; k1; k2 |] -> Certifya.levels dir (int_of_string k1) (int_of_string k2)

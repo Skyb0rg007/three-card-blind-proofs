@@ -1,0 +1,97 @@
+(** * Line-valued certificates as Rocq data
+
+    The A-safe counterpart of the safety tables of [Packed]:
+    [SaturationA.certified_opening_a] needs a [lookup] for which every entry
+    passes [CheckerA.check_node]. Here [lookup] reads a table of [N] entries
+    kept in primitive arrays of 63-bit integers. The keys are turn starts
+    packed with [Packed.enc], sorted; the third column holds each entry's
+    line [(c, b)], with [c + 2048] in bits 8–19 and [b] in bits 0–7.
+
+    The table is larger than a primitive array may be ([PArray.max_length]
+    is about 4.2M), so each column is cut into parts of [2^20] entries:
+    entry [j] is at index [j mod 2^20] of part [j / 2^20].
+
+    As in [Packed], nothing about the packing needs to be trusted: [lookup]
+    only answers for a state that decodes back to itself, and every entry is
+    checked as the state and the line it decodes to. *)
+
+From Stdlib Require Import List Bool Arith ZArith Lia Uint63 PArray.
+Import ListNotations.
+From TCB.Spec Require Import Model Game.
+From TCB.Proofs Require Import Packed.
+From TCB.Proofs Require CheckerA SaturationA.
+
+(** The low [k] bits of [i], as an integer. *)
+Fixpoint zfield (k : nat) (i : int) : Z :=
+  match k with
+  | O => 0%Z
+  | S k => let r := zfield k (shr i 1) in if eqb (iand i 1) 1 then Z.succ_double r else Z.double r
+  end.
+
+(** Entry [j] of a column cut into parts of [2^20]. *)
+Definition get (col : array (array int)) (j : int) : int := col.[shr j 20].[iand j 1048575].
+
+Section ATable.
+
+(** CheckerA's parameters: A's BIG size, B's saturation size, B's Thopter
+    limit, A's Thopter cut, B's life in entries; and the fuel. *)
+Variables K Hb ott tt M fuel : nat.
+
+(** The columns and the number of entries. *)
+Variables C1 C2 CV : array (array int).
+Variable N : int.
+
+Definition line_of (j : int) : Z * Z := (zfield 12 (shr (get CV j) 8) - 2048, zfield 8 (get CV j))%Z.
+
+(** The first index in [lo, hi) whose key is not below [(k1, k2)]. *)
+Fixpoint alower (f : nat) (lo hi k1 k2 : int) : int :=
+  match f with
+  | O => lo
+  | S f =>
+      if ltb lo hi then
+        let mid := shr (add lo hi) 1 in
+        if key_lt (get C1 mid) (get C2 mid) k1 k2 then alower f (add mid 1) hi k1 k2 else alower f lo mid k1 k2
+      else lo
+  end.
+
+Definition astart (k1 k2 : int) : int := alower 32 0 N k1 k2.
+
+Definition found (j k1 k2 : int) : bool := ltb j N && eqb (get C1 j) k1 && eqb (get C2 j) k2.
+
+Definition alookup (s : state) : option (Z * Z) :=
+  let '(k1, k2) := enc s in
+  let j := astart k1 k2 in
+  if found j k1 k2 then if state_eqb (dec k1 k2) s then Some (line_of j) else None else None.
+
+(** A tries its moves in order ([hint] allows every move). *)
+Definition aentry_ok (j : int) : bool :=
+  let '(c, b) := line_of j in
+  CheckerA.check_node K Hb ott tt alookup hint fuel true (CheckerA.entry M (dec (get C1 j) (get C2 j))) c b O.
+
+Lemma alookup_spec : forall s l, alookup s = Some l ->
+  exists j, ltb j N = true /\ s = dec (get C1 j) (get C2 j) /\ l = line_of j.
+Proof.
+  intros s l. unfold alookup. destruct (enc s) as [k1 k2]. cbv zeta.
+  generalize (astart k1 k2). intros j.
+  destruct (found j k1 k2) eqn:Hf; [| discriminate].
+  destruct (state_eqb (dec k1 k2) s) eqn:Hq; [| discriminate].
+  intros Hl. injection Hl as <-. apply state_eqb_eq in Hq.
+  unfold found in Hf. apply andb_true_iff in Hf as [Hf E2]. apply andb_true_iff in Hf as [Hj E1].
+  apply eqb_spec in E1, E2. exists j. rewrite E1, E2. auto.
+Qed.
+
+(** A does not lose going first if every entry checks and the opening's
+    line allows B's starting 20 life. *)
+Theorem table_safe_a : forall bs c b, chain aentry_ok bs -> hd 0%uint63 bs = 0%uint63 ->
+  last bs 0%uint63 = N -> Hb < K -> 1 <= Hb ->
+  alookup (CheckerA.key Hb tt (init PA)) = Some (c, b) -> (20 <= c)%Z ->
+  safe PA (init PA).
+Proof.
+  intros bs c b Hc H0 Hl HbK Hb1 Hk Hc20.
+  refine (SaturationA.certified_opening_a K Hb ott tt M alookup hint fuel c b HbK Hb1 _ Hk Hc20).
+  intros s c' b' Hlk. destruct (alookup_spec s _ Hlk) as (j & Hj & -> & E).
+  pose proof (chain_all aentry_ok bs _ Hc H0 Hl j Hj) as Hok.
+  unfold aentry_ok in Hok. rewrite <- E in Hok. exact Hok.
+Qed.
+
+End ATable.
