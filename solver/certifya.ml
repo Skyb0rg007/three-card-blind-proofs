@@ -71,7 +71,7 @@ let blife s = s.sideB.life
    each A node it records the moves that work, under any line; the hint
    allows exactly those, so the checker only follows A's working moves. *)
 module H = Hashtbl.Make (struct
-    type t = state * int * int * bool
+    type t = state * int * int * int * bool
     let equal = ( = )
     let hash = Hashtbl.hash_param 100 400
   end)
@@ -84,33 +84,33 @@ module S = Hashtbl.Make (struct
 
 let oracle p lk =
   let memo = H.create 1024 and good = S.create 256 in
-  let rec ok root s c b =
+  let rec ok root s c b lo =
     match winner s with
     | Some _ -> false
     | None ->
       if (not root) && is_turn_start s then
         match lk (a_key p.hb p.tt s) with
-        | Some (c', b') -> c <= c' && ((not (a_has_big p.k s)) || b <= b')
+        | Some (c', b') -> c + (b * lo) <= c' + (b' * lo) && ((not (a_has_big p.k s)) || b <= b')
         | None -> false
       else if a_huge_event p.hb s || a_big_event p.k s then false
       else
-        match H.find_opt memo (s, c, b, root) with
+        match H.find_opt memo (s, c, b, lo, root) with
         | Some r -> r
         | None ->
           let r =
             match to_move s with
             | PA ->
-              (match List.find_opt (fun m -> next s c b m) (moves s) with
+              (match List.find_opt (fun m -> next s c b lo m) (moves s) with
                | Some m ->
                  let l = Option.value (S.find_opt good s) ~default:[] in
                  if not (List.mem m l) then S.replace good s (m :: l);
                  true
                | None -> false)
-            | PB -> List.for_all (next s c b) (moves s)
+            | PB -> List.for_all (next s c b lo) (moves s)
           in
-          H.replace memo (s, c, b, root) r;
+          H.replace memo (s, c, b, lo, root) r;
           r
-  and next s c b m =
+  and next s c b lo m =
     if a_is_create p.k s m && a_has_big p.k s then false
     else
       let s' = a_stepA p.k p.hb p.tt s m in
@@ -123,13 +123,14 @@ let oracle p lk =
           let b1 = if a_is_create p.k s m then 0 else b in
           let c2 = c1 + (blife s' - blife s) in
           let b2 = if a_is_hit p.k s then b1 - 1 else b1 in
-          if c2 <= 0 && b2 <= 0 then true else ok false s' c2 b2
+          let lo2 = if a_is_pump_big p.k s m then lo + 1 else if a_is_create p.k s m then 0 else lo in
+          if c2 + (b2 * lo2) <= 0 && b2 <= 0 then true else ok false s' c2 b2 lo2
   in
   let hint s m = match S.find_opt good s with Some l -> List.mem m l | None -> false in
   let reset () = H.reset memo; S.reset good in
   (ok, hint, reset)
 
-let check p lk hint s c b = a_check_node p.k p.hb p.ott p.tt lk hint p.fuel true (a_entry p.m s) c b
+let check p lk hint s c b = a_check_node p.k p.hb p.ott p.tt lk hint p.fuel true (a_entry p.m s) c b 0
 
 (* The solver's line for a node (rsolver's [eval_go_big] for A-safe, over
    every legal move): A's nodes pick the line larger at n = [r], B's take
@@ -191,9 +192,9 @@ let explain p lk s0 c0 b0 =
   let node, sedge = solver_line p lk 20 in
   let s0 = a_entry p.m s0 in
   let sl = function None -> "lost" | Some (c, b) -> Printf.sprintf "(%d,%d)" c b in
-  Printf.printf "entry line (%d, %d), oracle %b, solver %s\n%s\n" c0 b0 (ok true s0 c0 b0) (sl (node true s0))
+  Printf.printf "entry line (%d, %d), oracle %b, solver %s\n%s\n" c0 b0 (ok true s0 c0 b0 0) (sl (node true s0))
     (Show.state s0);
-  let edge s c b m =
+  let edge s c b lo m =
     if a_is_create p.k s m && a_has_big p.k s then (None, "second BIG")
     else
       let s' = a_stepA p.k p.hb p.tt s m in
@@ -210,17 +211,18 @@ let explain p lk s0 c0 b0 =
                                          (if a_is_create p.k s m then " create" else "");
                                          (if a_is_hit p.k s then " hit" else "");
                                          (Printf.sprintf " d=%d" (blife s' - blife s)) ] in
-          if c2 <= 0 && b2 <= 0 then (None, "B dead" ^ flags)
-          else (Some (s', c2, b2), Printf.sprintf "(%d,%d)%s %b" c2 b2 flags (ok false s' c2 b2))
+          let lo2 = if a_is_pump_big p.k s m then lo + 1 else if a_is_create p.k s m then 0 else lo in
+          if c2 + (b2 * lo2) <= 0 && b2 <= 0 then (None, "B dead" ^ flags)
+          else (Some (s', c2, b2, lo2), Printf.sprintf "(%d,%d)%s %b" c2 b2 flags (ok false s' c2 b2 lo2))
   in
-  let rec go depth root s c b =
+  let rec go depth root s c b lo =
     let ind = String.make (2 * depth) ' ' in
     match winner s with
     | Some w -> Printf.printf "%s%s wins\n" ind (Show.player w)
     | None ->
       if (not root) && is_turn_start s then begin
         let k = a_key p.hb p.tt s in
-        Printf.printf "%sturn start, needs (%d, %d)%s, table %s, packed key %d %d\n%s%s\n" ind c b
+        Printf.printf "%sturn start, needs (%d, %d) for n >= %d%s, table %s, packed key %d %d\n%s%s\n" ind c b lo
           (if a_has_big p.k s then " BIG" else "")
           (match lk k with Some (c', b') -> Printf.sprintf "(%d, %d)" c' b' | None -> "none")
           (fst (Certify.enc k)) (snd (Certify.enc k)) ind (Show.state s)
@@ -229,13 +231,13 @@ let explain p lk s0 c0 b0 =
       else if a_big_event p.k s then Printf.printf "%sBIG could die\n%s\n" ind (Show.state s)
       else if depth > 80 then print_endline "too deep"
       else begin
-        let res = List.map (fun m -> (m, edge s c b m, sedge s m)) (moves s) in
+        let res = List.map (fun m -> (m, edge s c b lo m, sedge s m)) (moves s) in
         Printf.printf "%s%s to move, line (%d, %d), solver %s: %s\n" ind (Show.player (to_move s)) c b
           (sl (node true s))
           (String.concat "; " (List.map (fun (m, (_, r), v) -> Show.move m ^ " -> " ^ r ^ " solver " ^ sl v) res));
         let failing (_, (nx, r), _) =
           match nx with
-          | Some (s', c', b') -> not (ok false s' c' b')
+          | Some (s', c', b', lo') -> not (ok false s' c' b' lo')
           | None -> not (String.length r >= 6 && String.sub r 0 6 = "B dead")
         in
         let pick =
@@ -246,14 +248,14 @@ let explain p lk s0 c0 b0 =
             List.find_opt (fun (_, _, v) -> v = best) res
         in
         match pick with
-        | Some (m, (Some (s', c', b'), _), _) ->
+        | Some (m, (Some (s', c', b', lo'), _), _) ->
           Printf.printf "%s> %s %s\n" ind (Show.player (to_move s)) (Show.move m);
-          go (depth + 1) false s' c' b'
+          go (depth + 1) false s' c' b' lo'
         | Some (m, (None, r), _) -> Printf.printf "%s> %s %s: %s\n" ind (Show.player (to_move s)) (Show.move m) r
         | None -> ()
       end
   in
-  go 0 true s0 c0 b0
+  go 0 true s0 c0 b0 0
 
 (* The collected entries, outside the OCaml heap so that the forked workers
    share them (a heap would be copied page by page as their GC marks it):
@@ -418,7 +420,7 @@ let run dir starter outfile p =
               for j = a to b - 1 do
                 let s = dec fr.(j) and c, b = vline (Option.get (Tbl.find used fr.(j))) in
                 reset ();
-                let o = ok true (a_entry p.m s) c b in
+                let o = ok true (a_entry p.m s) c b 0 in
                 let r = check p logging hint s c b in
                 if r <> o then Printf.fprintf oc "! %d %d disagree\n" (fst fr.(j)) (snd fr.(j));
                 if not r then begin
@@ -473,7 +475,7 @@ let run dir starter outfile p =
           let bad = ref 0 in
           Tbl.iter_range used (lo + a) (lo + b) (fun e v ->
               let s = dec e and c, b = vline v in
-              let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b); hint2) in
+              let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b 0); hint2) in
               if not (check p restricted h s c b) then incr bad);
           !bad)
       |> Array.fold_left ( + ) 0
