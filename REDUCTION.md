@@ -1180,16 +1180,37 @@ Done: `a_first_a_safe` and `a_first_draw` are proved in `Results.v`.
   lower bound `lo` (0 at an entry, +1 per pump on BIG, 0 on a new BIG) and
   compares lines for n ≥ lo.
 - **In Rocq.** `certify-a-export` checks those entries once more as Rocq
-  will (A tries its moves in order: Rocq's hint is `true`; fuel 200) and
-  writes `proofs/adraw`. `PackedA.v` reads the table: each column is cut
-  into parts of 2^20 entries, because a primitive array holds at most
-  about 4.2M. B's life in the entries is M = 64 (the solver's checks used
-  200): the checker's nats are unary in Rocq, and B's life is the largest
-  one it handles, so 64 halves the time. It only has to exceed what B can
-  lose in one turn: 25 is too small (B dies inside a turn), 40 passed on
-  the samples tried.
-- **Cost.** The extracted check makes 312.6M lookups (about 1 CPU-hour in
-  OCaml). Rocq takes about 15.5 CPU-hours over 128 chunks, balanced by
-  that count (4–10 minutes and 0.85 GB each). A lookup costs about 40 µs
-  in the VM, so lookups are about a quarter of the time; the rest is the
-  checker's search itself (`moves`, `step`, `norm` at each node).
+  will (fuel 200) and writes `proofs/adraw`. `PackedA.v` reads the table:
+  each column is cut into parts of 2^20 entries, because a primitive array
+  holds at most about 4.2M.
+- **A faster search.** Each entry is checked with `MemoA.check_m`, proved
+  to imply `CheckerA.check_node` (`check_m_true`). It searches the same
+  turn, with two changes. A tries its attacks in reverse order: the model
+  lists the empty attack first and the attack with everything last, and
+  the bigger attacks find A's safe line sooner. And it keeps a memo of
+  the nodes it has searched, keyed by the state, the line and `lo`, so a
+  position reached again by another order of moves is not searched twice.
+  The memo is a search tree on a hash of the state (`Packed.shash`); a hit
+  compares the whole state, so nothing is assumed about the hash. Rocq has
+  no proved facts about updating primitive arrays (that would need more
+  axioms), so the memo is a tree of inductive data. In OCaml this cuts the
+  search from 462 nodes and 54 lookups per entry to 118 nodes and 7.5
+  lookups.
+- **B's life.** B's life in an entry's certificate state is any number that
+  keeps B alive through the turn (`CheckerA.cert_safe` holds for every
+  choice), and the checker's nats are unary in Rocq, so smaller is faster.
+  Each entry stores its own (bits 20–26 of its `CV` value): the export
+  searches the entry with B on 64 life, notes the least life B has at any
+  node, and gives the entry 64 minus that plus 1. Entries with B to move
+  need 1; entries with A to move need 2 to 42.
+- **Cost.** Rocq takes about 3.7 CPU-hours over 128 chunks of 1.2–2.7
+  minutes and 0.85 GB each, cut by the nodes and lookups of the
+  extracted check (it was 15.5 CPU-hours, 4–10 minutes per chunk, with
+  `check_node`, the attacks in order and B on 64 life).
+- **The B-side tables** (`proofs/afirst`, `proofs/bfirst`) are checked the
+  same way, with `MemoB.check_mb` and `MemoB.check_mw` (proved to imply
+  `Checker.check_node` and `WinCert.check_win`). There B tries its moves in
+  the model's order (reversing them doesn't help), and a node with a
+  single move skips the memo, which costs more there than it saves. On
+  samples this makes them 1.2–1.3 times faster; together they take about
+  1.75 CPU-hours (it was about 2.5).

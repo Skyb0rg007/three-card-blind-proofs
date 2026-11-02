@@ -95,7 +95,9 @@ The repository is split so that you only have to read one directory.
     about the model: `never_stuck`, `preservation` and `no_idle_moves`.
   - `core/Packed.v` stores such a table compactly in primitive arrays, and proves
     that if every entry passes the checker, the claim holds. `core/PackedA.v`
-    does the same for line-valued tables.
+    does the same for line-valued tables. The entries are checked with
+    `core/MemoB.v` and `core/MemoA.v`: the same searches with a memo of
+    the positions already searched, proved to imply the checkers above.
   - `bfirst/`, `afirst/` and `adraw/` hold the three tables (`Data*.v.xz`,
     computed by the solver). Each `Chunk*.v` runs the checker on a slice of
     the table with `vm_compute`.
@@ -106,12 +108,14 @@ Build everything with:
 nix-shell --run 'dune build -j 4'
 ```
 
-This takes about 18 CPU-hours: Rocq runs the checker on 1.5M positions for
-the B-first claim, 1.6M for A-first B-safe (together about 2.5 CPU-hours)
-and 5.9M for A-first A-safe (`proofs/adraw`, about 15.5 CPU-hours: 128
-chunks of 4–10 minutes each). Each job needs about 1 GB of memory (the two
-`Data.v` files of `proofs/afirst` and `proofs/bfirst` need about 3 GB each
-while they compile), so choose `-j` to fit your machine.
+This takes about 5.5 CPU-hours: Rocq runs the checker on 1.5M positions for
+the B-first claim (`proofs/bfirst`, 1 CPU-hour: 48 chunks of 0.8–1.8
+minutes), 1.6M for A-first B-safe (`proofs/afirst`, 0.75 CPU-hours: 48
+chunks of 0.6–1.3 minutes) and 5.9M for A-first A-safe (`proofs/adraw`,
+3.7 CPU-hours: 128 chunks of 1.2–2.7 minutes). Each job needs about 1 GB
+of memory or less, except the two `Data.v` files of `proofs/afirst` and
+`proofs/bfirst`, which need about 3 GB each while they compile, so choose
+`-j` to fit your machine.
 
 For each theorem in `proofs/results/Results.v`, the build prints the
 assumptions it rests on. The only ones are Rocq's primitive 63-bit integers
@@ -166,12 +170,17 @@ $C certify-a tables/asafe-afirst-big A tables/asafe-afirst-big.entries
 TCB_M=64 TCB_FUEL=200 $C certify-a-export tables/asafe-afirst-big.entries A proofs/adraw 128
 ```
 
+`main.exe rechunk proofs/afirst 48` (or `proofs/bfirst`) checks an exported
+table again as Rocq will and cuts it into chunks of near-equal work,
+leaving `Data.v.xz` as it is.
+
 The export keeps only the positions the check of the opening reaches, runs
 the same check as Rocq (the checkers extracted to OCaml) and writes the
-Rocq files. For the A-safe table these are two steps: `certify-a` collects
-the reached positions (with an untrusted oracle choosing A's moves) and
+Rocq files, with the chunks cut by the work the check does on each entry.
+For the A-safe table these are two steps: `certify-a` collects the reached
+positions (with an untrusted oracle choosing A's moves) and
 `certify-a-export` checks them again exactly as Rocq will, with A trying
-every move in order.
+every move (its attacks in reverse order).
 
 `REDUCTION.md` explains how the search space was reduced to make these
 tables small enough to compute.
