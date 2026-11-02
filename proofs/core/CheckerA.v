@@ -167,13 +167,15 @@ Variable hint : state -> move -> bool.
 Definition blife (s : state) : Z := Z.of_nat s.(sideB).(life).
 
 (** Is A safe through the rest of this turn from [s], whenever B's life is
-    at most [c + b * n]? At the next turn start the certificate is
-    consulted ([root] is false below the entry being checked). The edge
-    moves the line as the solver's [ltrans] does, the other way round: a
-    pump on BIG reads the child at [n + 1], a new BIG at [n = 0], a hit
-    takes [n] more life. A child line that is at most 0 for every [n] means
-    B has died. *)
-Fixpoint check_node (fuel : nat) (root : bool) (s : state) (c b : Z) : bool :=
+    at most [c + b * n]? Here [n] is known to be at least [lo] (the pumps on
+    BIG since the entry). At the next turn start the certificate is
+    consulted ([root] is false below the entry being checked); its line
+    must be above this one for every [n >= lo]. The edge moves the line as
+    the solver's [ltrans] does, the other way round: a pump on BIG reads the
+    child at [n + 1] (and [lo + 1]), a new BIG at [n = 0], a hit takes [n]
+    more life. A child line that is at most 0 for every [n >= lo] means B
+    has died. *)
+Fixpoint check_node (fuel : nat) (root : bool) (s : state) (c b : Z) (lo : nat) : bool :=
   match fuel with
   | O => false
   | S f =>
@@ -182,7 +184,8 @@ Fixpoint check_node (fuel : nat) (root : bool) (s : state) (c b : Z) : bool :=
       | None =>
           if negb root && is_turn_start s then
             match lookup (key s) with
-            | Some (c', b') => (c <=? c') && (negb (has_big s) || (b <=? b'))
+            | Some (c', b') =>
+                (c + b * Z.of_nat lo <=? c' + b' * Z.of_nat lo) && (negb (has_big s) || (b <=? b'))
             | None => false
             end
           else if huge_event s || big_event s then false
@@ -198,8 +201,9 @@ Fixpoint check_node (fuel : nat) (root : bool) (s : state) (c b : Z) : bool :=
                   let b1 := if is_create s m then 0 else b in
                   let c2 := c1 + (blife s' - blife s) in
                   let b2 := if is_hit s then b1 - 1 else b1 in
-                  if (c2 <=? 0) && (b2 <=? 0) then true
-                  else check_node f false s' c2 b2
+                  let lo2 := if is_pump_big s m then S lo else if is_create s m then O else lo in
+                  if (c2 + b2 * Z.of_nat lo2 <=? 0) && (b2 <=? 0) then true
+                  else check_node f false s' c2 b2 lo2
               end in
             match to_move s with
             | PA => some_move (fun m => if hint s m then next m else false) (moves s)
@@ -284,7 +288,7 @@ Qed.
 Variable fuel : nat.
 
 (** Every entry checks. *)
-Hypothesis cert_ok : forall s c b, lookup s = Some (c, b) -> check_node fuel true (entry s) c b = true.
+Hypothesis cert_ok : forall s c b, lookup s = Some (c, b) -> check_node fuel true (entry s) c b O = true.
 
 (** The simulation facts (discharged in a separate file). *)
 Hypothesis sim_mine : forall n s t m,
@@ -312,12 +316,13 @@ Hypothesis sim_step : forall n s t m,
 Hypothesis RA_key : forall n s t, RA n s t -> RA n (entry (key s)) t.
 Hypothesis has_big_key : forall s, has_big (entry (key s)) = has_big s.
 
-Lemma check_below : forall f s c b, check_node f false s c b = true ->
+Lemma check_below : forall f s c b lo, check_node f false s c b lo = true ->
   (winner s = None /\ is_turn_start s = true /\
-   exists c' b', lookup (key s) = Some (c', b') /\ c <= c' /\ (has_big s = true -> b <= b')) \/
-  check_node f true s c b = true.
+   exists c' b', lookup (key s) = Some (c', b') /\
+     c + b * Z.of_nat lo <= c' + b' * Z.of_nat lo /\ (has_big s = true -> b <= b')) \/
+  check_node f true s c b lo = true.
 Proof.
-  intros [| f] s c b Hc; [discriminate |]. cbn [check_node negb andb] in *.
+  intros [| f] s c b lo Hc; [discriminate |]. cbn [check_node negb andb] in *.
   destruct (winner s) as [w |] eqn:Ew; [discriminate |].
   destruct (is_turn_start s) eqn:Et; auto.
   left. repeat split; auto.
@@ -327,18 +332,19 @@ Proof.
   intros Hbb. rewrite Hbb in H2. apply Z.leb_le. exact H2.
 Qed.
 
+(** [n] is the real BIG Walker's excess, [lo] the bound [check_node] knows. *)
 Definition good (t : state) : Prop :=
   winner t = Some PA \/
-  exists n s c b f, RA n s t /\ (1 <= t.(sideB).(life))%nat /\
-    blife t <= c + b * Z.of_nat n /\ check_node f true s c b = true.
+  exists n s c b lo f, RA n s t /\ (lo <= n)%nat /\ (1 <= t.(sideB).(life))%nat /\
+    blife t <= c + b * Z.of_nat n /\ check_node f true s c b lo = true.
 
 Lemma good_entry : forall n s t c b, RA n s t -> (1 <= t.(sideB).(life))%nat ->
   is_turn_start s = true ->
   lookup (key s) = Some (c, b) -> blife t <= c + b * Z.of_nat n -> good t.
 Proof.
   intros n s t c b HR Hl _ Hk Hv. right.
-  exists n, (entry (key s)), c, b, fuel.
-  split; [apply RA_key; exact HR |]. split; [exact Hl |]. split; [exact Hv |].
+  exists n, (entry (key s)), c, b, O, fuel.
+  split; [apply RA_key; exact HR |]. split; [lia |]. split; [exact Hl |]. split; [exact Hv |].
   apply cert_ok. exact Hk.
 Qed.
 
@@ -364,8 +370,8 @@ Proof.
     + destruct (is_hit s); nia.
 Qed.
 
-Lemma good_next : forall n s t m f c b,
-  RA n s t -> (1 <= t.(sideB).(life))%nat -> blife t <= c + b * Z.of_nat n ->
+Lemma good_next : forall n s t m f c b lo,
+  RA n s t -> (lo <= n)%nat -> (1 <= t.(sideB).(life))%nat -> blife t <= c + b * Z.of_nat n ->
   In m (moves s) -> huge_event s = false -> big_event s = false ->
   (if is_create s m && has_big s then false else
    let s' := stepA s m in
@@ -377,12 +383,13 @@ Lemma good_next : forall n s t m f c b,
        let b1 := if is_create s m then 0 else b in
        let c2 := c1 + (blife s' - blife s) in
        let b2 := if is_hit s then b1 - 1 else b1 in
-       if (c2 <=? 0) && (b2 <=? 0) then true
-       else check_node f false s' c2 b2
+       let lo2 := if is_pump_big s m then S lo else if is_create s m then O else lo in
+       if (c2 + b2 * Z.of_nat lo2 <=? 0) && (b2 <=? 0) then true
+       else check_node f false s' c2 b2 lo2
    end) = true ->
   good (step t m).
 Proof.
-  intros n s t m f c b HR Hl Hv Hin Hh Hbe Hc.
+  intros n s t m f c b lo HR Hlo Hl Hv Hin Hh Hbe Hc.
   destruct (is_create s m && has_big s)%bool eqn:Ecb; [discriminate |].
   cbv zeta in Hc. destruct (too_many (stepA s m)); [discriminate |].
   destruct (winner (stepA s m)) as [w |] eqn:Ew; [discriminate |].
@@ -390,23 +397,27 @@ Proof.
     [left; exact Hwin |].
   pose proof (next_bound n s t m c b HR Hv Ecb Hlife) as Hbd. cbv zeta in Hbd.
   set (n' := if is_pump_big s m then S n else if is_create s m then O else n) in *.
+  set (lo2 := if is_pump_big s m then S lo else if is_create s m then O else lo) in *.
+  assert (Hlo2 : (lo2 <= n')%nat)
+    by (subst lo2 n'; destruct (is_pump_big s m); [lia |]; destruct (is_create s m); lia).
   set (c2 := (if is_pump_big s m then c - b else c) + (blife (stepA s m) - blife s)) in *.
   set (b2 := if is_hit s then (if is_create s m then 0 else b) - 1 else if is_create s m then 0 else b) in *.
-  destruct ((c2 <=? 0) && (b2 <=? 0)) eqn:Ez.
-  - (* B has no life left at any n: impossible, it has at least 1 *)
+  destruct ((c2 + b2 * Z.of_nat lo2 <=? 0) && (b2 <=? 0)) eqn:Ez.
+  - (* B has no life left at any n >= lo2: impossible, it has at least 1 *)
     exfalso. apply andb_prop in Ez as [E1 E2]. apply Z.leb_le in E1, E2.
-    unfold blife in Hbd. lia.
-  - destruct (check_below f (stepA s m) c2 b2 Hc) as [(_ & Ht & c' & b' & Hk & H1 & H2) | Hr].
+    unfold blife in Hbd. apply Nat2Z.inj_le in Hlo2. nia.
+  - destruct (check_below f (stepA s m) c2 b2 lo2 Hc) as [(_ & Ht & c' & b' & Hk & H1 & H2) | Hr].
     + apply (good_entry n' (stepA s m) (step t m) c' b'); auto.
       destruct (has_big (stepA s m)) eqn:Ebig.
-      * specialize (H2 eq_refl). nia.
-      * rewrite (no_big_n _ _ _ HR' Ebig) in Hbd |- *. lia.
-    + right. exists n', (stepA s m), c2, b2, f. split; [exact HR' |]. auto.
+      * specialize (H2 eq_refl). apply Nat2Z.inj_le in Hlo2. nia.
+      * pose proof (no_big_n _ _ _ HR' Ebig) as En. rewrite En in Hbd, Hlo2 |- *.
+        assert (lo2 = O) as E0 by lia. rewrite E0 in H1. cbn in *. lia.
+    + right. exists n', (stepA s m), c2, b2, lo2, f. split; [exact HR' |]. auto.
 Qed.
 
 Theorem good_safe : safe_set PA good.
 Proof.
-  intros t [Hw | (n & s & c & b & [| f] & HR & Hl & Hv & Hc)].
+  intros t [Hw | (n & s & c & b & lo & [| f] & HR & Hlo & Hl & Hv & Hc)].
   - rewrite Hw. repeat split; try discriminate; intros Hn; discriminate.
   - discriminate.
   - pose proof (RA_winner _ _ _ HR) as Ew. pose proof (RA_to_move _ _ _ HR) as Em.
@@ -433,7 +444,7 @@ Theorem cert_safe : forall k c b n t, lookup k = Some (c, b) -> RA n (entry k) t
   (1 <= t.(sideB).(life))%nat -> blife t <= c + b * Z.of_nat n -> safe PA t.
 Proof.
   intros k c b n t Hk HR Hl Hv. exists good. split; [exact good_safe |].
-  right. exists n, (entry k), c, b, fuel. split; [exact HR |]. split; [exact Hl |].
+  right. exists n, (entry k), c, b, O, fuel. split; [exact HR |]. split; [lia |]. split; [exact Hl |].
   split; [exact Hv | apply cert_ok; exact Hk].
 Qed.
 
