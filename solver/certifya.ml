@@ -258,7 +258,8 @@ let explain p lk s0 c0 b0 =
 (* The collected entries, outside the OCaml heap so that the forked workers
    share them (a heap would be copied page by page as their GC marks it):
    an open-addressing table over memory-mapped files, keyed by the packed
-   key (stored + 1, so 0 is empty), with the line as [16 c + b]. *)
+   key (stored + 1, so 0 is empty). The files outlive the process, so a run
+   that is stopped can resume. *)
 module Tbl = struct
   open Bigarray
 
@@ -269,15 +270,6 @@ module Tbl = struct
     v : (int, int_elt, c_layout) Array1.t;
     mutable n : int;
   }
-
-  let create base cap =
-    if cap land (cap - 1) <> 0 then failwith "certify-a: TCB_CAP must be a power of 2";
-    let m s =
-      let p = base ^ s in
-      Disk.remove p;
-      Disk.map int p cap ~write:true
-    in
-    { cap; a = m ".a"; b = m ".b"; v = m ".v"; n = 0 }
 
   let rec probe t k1 k2 i =
     let x = Array1.unsafe_get t.a i in
@@ -298,6 +290,18 @@ module Tbl = struct
 
   (* Slots [lo, hi) that hold entries. *)
   let iter_range t lo hi f = for i = lo to hi - 1 do if t.a.{i} <> 0 then f (t.a.{i} - 1, t.b.{i}) t.v.{i} done
+
+  (* A new table at [base], or the one there when [keep]. *)
+  let create ~keep base cap =
+    if cap land (cap - 1) <> 0 then failwith "certify-a: TCB_CAP must be a power of 2";
+    let m s =
+      let p = base ^ s in
+      if not keep then Disk.remove p;
+      Disk.map int p cap ~write:true
+    in
+    let t = { cap; a = m ".a"; b = m ".b"; v = m ".v"; n = 0 } in
+    iter_range t 0 cap (fun _ _ -> t.n <- t.n + 1);
+    t
 end
 
 (* Entries are packed as [Certify.enc] does (Packed.v's layout; [dec] below
@@ -320,8 +324,10 @@ let dec (k1, k2) =
   { active = p; first_turn = bit k1 54; sideA = dec_side k1; sideB = dec_side k2; cmb = no_combat;
     pend = Window (Upkeep, p, false) }
 
-let lenc (c, b) = (c lsl 4) lor b
-let ldec v = (v asr 4, v land 15)
+(* An entry's value: its line, and the layer of pass 1 that found it. *)
+let venc (c, b) layer = (((c + 4096) lsl 4) lor b) lsl 12 lor layer
+let vline v = (((v lsr 12) lsr 4) - 4096, (v lsr 12) land 15)
+let vlayer v = v land 4095
 
 let read_lines path f =
   let ic = open_in path in
@@ -329,121 +335,163 @@ let read_lines path f =
   close_in ic;
   Sys.remove path
 
+let write_file path s =
+  let oc = open_out (path ^ ".tmp") in
+  output_string oc s;
+  close_out oc;
+  Sys.rename (path ^ ".tmp") path
+
+(* [certify-a]. Progress is kept in OUT.state*: the entry table, and a line
+   saying how far the passes got, so TCB_RESUME=1 continues a stopped run.
+   Pass 1 layer L checks the entries found by layer L - 1 (the opening is
+   layer 0); the state line "pass1 L F" means layers up to L are done (F
+   failures), "pass2 K F" that K of pass 2's slices are. *)
 let run dir starter outfile p =
   let t = open_table dir in
   let lk = lookup t in
   let wdir = Filename.dirname outfile in
-  let pid = Unix.getpid () in
-  let tmp s = Filename.concat wdir (Printf.sprintf "certa-%d-%s" pid s) in
+  let st = outfile ^ ".state" in
+  let resume = Sys.getenv_opt "TCB_RESUME" = Some "1" && Sys.file_exists st in
   let t0 = Unix.gettimeofday () in
-  let cap = 1 lsl (match Sys.getenv_opt "TCB_CAP" with Some c -> int_of_string c | None -> 25) in
+  let cap = 1 lsl (match Sys.getenv_opt "TCB_CAP" with Some c -> int_of_string c | None -> 24) in
   Printf.printf "certify-a %s: %d bases, %d levels; K=%d Hb=%d ott=%d tt=%d M=%d fuel=%d\n%!" dir t.sv.Fix.nb
     t.sv.Fix.nl p.k p.hb p.ott p.tt p.m p.fuel;
   let s0 = init starter in
   let k0 = a_key p.hb p.tt s0 in
   let c0, b0 = match lk k0 with Some v -> v | None -> failwith "certify-a: the opening has no entry" in
   Printf.printf "opening: line (%d, %d), B has %d life, BIG %b\n%!" c0 b0 s0.sideB.life (a_has_big p.k s0);
-  (* pass 1, a layer at a time: the workers check a slice of the frontier
-     each and write the entries their checks consult that aren't known yet *)
-  let used = Tbl.create (tmp "used") cap in
   let key_of s =
     let e = enc s in
     if dec e <> s then failwith ("certify-a: a state the packing doesn't keep: " ^ Show.state s);
     e
   in
-  let e0 = key_of k0 in
-  ignore (Tbl.add used e0 (lenc (c0, b0)));
-  let failf = open_out (outfile ^ ".fail") in
-  let frontier = ref [| e0 |] and fails = ref 0 and shown = ref 0 and layer = ref 0 in
-  while Array.length !frontier > 0 do
-    let fr = !frontier in
-    let nf = Array.length fr in
-    let w = Par.workers nf 2000 in
-    let name k = tmp (Printf.sprintf "layer-%d" k) in
-    let bad =
-      Par.map ~dir:wdir w (fun k ->
-          let a, b = Par.chunk nf w k in
-          let oc = open_out (name k) in
-          let seen = Hashtbl.create 1024 in
-          let logging s =
-            match lk s with
-            | Some v ->
-              let e = key_of s in
-              if not (Tbl.mem used e || Hashtbl.mem seen e) then begin
-                Hashtbl.replace seen e ();
-                let k1, k2 = e in
-                Printf.fprintf oc "+ %d %d %d\n" k1 k2 (lenc v)
-              end;
-              Some v
-            | None -> None
-          in
-          let ok, hint, reset = oracle p lk in
-          let bad = ref 0 in
-          for j = a to b - 1 do
-            let s = dec fr.(j) and c, b = ldec (Option.get (Tbl.find used fr.(j))) in
-            reset ();
-            let o = ok true (a_entry p.m s) c b in
-            let r = check p logging hint s c b in
-            if r <> o then Printf.fprintf oc "! %d %d disagree\n" (fst fr.(j)) (snd fr.(j));
-            if not r then begin
-              incr bad;
-              Printf.fprintf oc "- %d %d\n" (fst fr.(j)) (snd fr.(j))
-            end
-          done;
-          close_out oc;
-          !bad)
-    in
-    let next = ref [] in
-    for k = 0 to w - 1 do
-      read_lines (name k) (fun l ->
-          match String.split_on_char ' ' l with
-          | [ "+"; k1; k2; v ] ->
-            let e = (int_of_string k1, int_of_string k2) in
-            if Tbl.add used e (int_of_string v) then next := e :: !next
-          | [ "-"; k1; k2 ] ->
-            let e = (int_of_string k1, int_of_string k2) in
-            let c, b = ldec (Option.get (Tbl.find used e)) in
-            incr fails;
-            Printf.fprintf failf "%s %s %d %d\n%!" k1 k2 c b;
-            if !shown < 3 then (incr shown; explain p lk (dec e) c b)
-          | _ -> print_endline l)
+  let used = Tbl.create ~keep:resume (st ^ "-used") cap in
+  let phase, done_, fails =
+    if resume then (
+      let ic = open_in st in
+      let r = Scanf.sscanf (input_line ic) "%s %d %d" (fun a b c -> (a, b, c)) in
+      close_in ic;
+      let a, b, c = r in
+      Printf.printf "resuming: %s %d (%d failed), %d entries\n%!" a b c used.Tbl.n;
+      r)
+    else (
+      ignore (Tbl.add used (key_of k0) (venc (c0, b0) 0));
+      write_file st "pass1 -1 0\n";
+      ("pass1", -1, 0))
+  in
+  let fails = ref fails in
+  (* pass 1, a layer at a time: the workers check a slice of the layer each
+     and write the entries their checks consult that aren't known yet *)
+  if phase = "pass1" then begin
+    let failf = open_out_gen [ Open_append; Open_creat ] 0o644 (outfile ^ ".fail") in
+    let shown = ref 0 and layer = ref (done_ + 1) and continue = ref true in
+    while !continue do
+      let l = !layer in
+      let fr = ref [] in
+      Tbl.iter_range used 0 cap (fun e v -> if vlayer v = l then fr := e :: !fr);
+      let fr = Array.of_list !fr in
+      let nf = Array.length fr in
+      if nf = 0 then continue := false
+      else begin
+        let w = Par.workers nf 2000 in
+        let pid = Unix.getpid () in
+        let name k = Filename.concat wdir (Printf.sprintf "certa-%d-layer-%d" pid k) in
+        let bad =
+          Par.map ~dir:wdir w (fun k ->
+              let a, b = Par.chunk nf w k in
+              let oc = open_out (name k) in
+              let seen = Hashtbl.create 1024 in
+              let logging s =
+                match lk s with
+                | Some v ->
+                  let e = key_of s in
+                  if not (Tbl.mem used e || Hashtbl.mem seen e) then begin
+                    Hashtbl.replace seen e ();
+                    let k1, k2 = e in
+                    Printf.fprintf oc "+ %d %d %d\n" k1 k2 (venc v (l + 1))
+                  end;
+                  Some v
+                | None -> None
+              in
+              let ok, hint, reset = oracle p lk in
+              let bad = ref 0 in
+              for j = a to b - 1 do
+                let s = dec fr.(j) and c, b = vline (Option.get (Tbl.find used fr.(j))) in
+                reset ();
+                let o = ok true (a_entry p.m s) c b in
+                let r = check p logging hint s c b in
+                if r <> o then Printf.fprintf oc "! %d %d disagree\n" (fst fr.(j)) (snd fr.(j));
+                if not r then begin
+                  incr bad;
+                  Printf.fprintf oc "- %d %d\n" (fst fr.(j)) (snd fr.(j))
+                end
+              done;
+              close_out oc;
+              !bad)
+        in
+        let nnew = ref 0 in
+        for k = 0 to w - 1 do
+          read_lines (name k) (fun line ->
+              match String.split_on_char ' ' line with
+              | [ "+"; k1; k2; v ] -> if Tbl.add used (int_of_string k1, int_of_string k2) (int_of_string v) then incr nnew
+              | [ "-"; k1; k2 ] ->
+                let e = (int_of_string k1, int_of_string k2) in
+                let c, b = vline (Option.get (Tbl.find used e)) in
+                incr fails;
+                Printf.fprintf failf "%s %s %d %d\n%!" k1 k2 c b;
+                if !shown < 3 then (incr shown; explain p lk (dec e) c b)
+              | _ -> print_endline line)
+        done;
+        write_file st (Printf.sprintf "pass1 %d %d\n" l !fails);
+        Printf.printf "  pass 1, layer %d: %d checked (%d failed), %d new, %d collected (%.0fs)\n%!" l nf
+          (Array.fold_left ( + ) 0 bad) !nnew used.Tbl.n (Unix.gettimeofday () -. t0);
+        incr layer
+      end
     done;
-    incr layer;
-    frontier := Array.of_list !next;
-    Printf.printf "  pass 1, layer %d: %d checked (%d failed), %d new, %d collected (%.0fs)\n%!" !layer nf
-      (Array.fold_left ( + ) 0 bad) (Array.length !frontier) used.Tbl.n (Unix.gettimeofday () -. t0)
-  done;
-  close_out failf;
+    close_out failf;
+    write_file st (Printf.sprintf "pass2 0 %d\n" !fails)
+  end;
   let n = used.Tbl.n in
-  Printf.printf "pass 1: %d entries collected, %d failed (%.1fs)\n%!" n !fails (Unix.gettimeofday () -. t0);
+  Printf.printf "pass 1: %d entries collected, %d failed so far (%.1fs)\n%!" n !fails (Unix.gettimeofday () -. t0);
   (* pass 2: lookup restricted to the closure, as Rocq will; A's moves from
-     the oracle, or every move with TCB_HINT=all (as Rocq's hint) *)
+     the oracle, or every move with TCB_HINT=all (as Rocq's hint), in
+     slices of the table *)
   let restricted s =
     let e = enc s in
-    match Tbl.find used e with Some v when dec e = s -> Some (ldec v) | _ -> None
+    match Tbl.find used e with Some v when dec e = s -> Some (vline v) | _ -> None
   in
   let all = Sys.getenv_opt "TCB_HINT" = Some "all" in
-  let w = Par.workers n 2000 in
-  let bad2 =
-    Par.map ~dir:wdir w (fun k ->
-        let lo, hi = Par.chunk cap w k in
-        let ok2, hint2, reset2 = oracle p restricted in
-        let bad = ref 0 in
-        Tbl.iter_range used lo hi (fun e v ->
-            let s = dec e and c, b = ldec v in
-            let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b); hint2) in
-            if not (check p restricted h s c b) then incr bad);
-        !bad)
-    |> Array.fold_left ( + ) 0
-  in
-  Printf.printf "pass 2 (closure only, hint %s): %d of %d failed (%.1fs)\n%!" (if all then "all" else "oracle") bad2 n
+  let slices = 32 in
+  let bad2 = ref 0 in
+  for sl = (if phase = "pass2" then done_ else 0) to slices - 1 do
+    let lo, hi = Par.chunk cap slices sl in
+    let w = Par.workers n 2000 in
+    let bad =
+      Par.map ~dir:wdir w (fun k ->
+          let a, b = Par.chunk (hi - lo) w k in
+          let ok2, hint2, reset2 = oracle p restricted in
+          let bad = ref 0 in
+          Tbl.iter_range used (lo + a) (lo + b) (fun e v ->
+              let s = dec e and c, b = vline v in
+              let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b); hint2) in
+              if not (check p restricted h s c b) then incr bad);
+          !bad)
+      |> Array.fold_left ( + ) 0
+    in
+    bad2 := !bad2 + bad;
+    fails := !fails + bad;
+    write_file st (Printf.sprintf "pass2 %d %d\n" (sl + 1) !fails);
+    Printf.printf "  pass 2: slice %d of %d, %d failed in this run (%.0fs)\n%!" (sl + 1) slices !bad2 (Unix.gettimeofday () -. t0)
+  done;
+  Printf.printf "pass 2 (closure only, hint %s): %d of %d failed in this run; %d failures in all (%.1fs)\n%!"
+    (if all then "all" else "oracle") !bad2 n !fails
     (Unix.gettimeofday () -. t0);
   (* the entries, sorted by packed key *)
-  let raw = tmp "entries" in
+  let raw = st ^ "-entries" in
   let oc = open_out raw in
   let minc = ref max_int and maxc = ref min_int and maxb = ref 0 in
   Tbl.iter_range used 0 cap (fun (k1, k2) v ->
-      let c, b = ldec v in
+      let c, b = vline v in
       minc := min !minc c; maxc := max !maxc c; maxb := max !maxb b;
       Printf.fprintf oc "%d %d %d %d\n" k1 k2 c b);
   close_out oc;
@@ -454,10 +502,12 @@ let run dir starter outfile p =
   if Sys.command (Printf.sprintf "LC_ALL=C sort -n -k1,1 -k2,2 %s >> %s" (Filename.quote raw) (Filename.quote outfile)) <> 0
   then failwith "certify-a: sort failed";
   Sys.remove raw;
-  List.iter (fun s -> Disk.remove (tmp "used" ^ s)) [ ".a"; ".b"; ".v" ];
   Printf.printf "wrote %d entries to %s (c in %d..%d, b up to %d)\n" n outfile !minc !maxc !maxb;
-  if !fails = 0 && bad2 = 0 && b0 = 0 && c0 >= s0.sideB.life then
-    print_endline "certified: A is safe from the opening"
+  if !fails = 0 && b0 = 0 && c0 >= s0.sideB.life then begin
+    print_endline "certified: A is safe from the opening";
+    List.iter (fun s -> Disk.remove (st ^ "-used" ^ s)) [ ".a"; ".b"; ".v" ];
+    Disk.remove st
+  end
   else print_endline "not certified"
 
 (* [explain] for an entry given by its packed key. *)
