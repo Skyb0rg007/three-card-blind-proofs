@@ -3,16 +3,18 @@
     The facts about the model ([never_stuck], [no_idle_moves],
     [init_well_formed], [preservation]) are proved directly. Each result
     about an opening rests on a certificate: a table of positions computed by
-    the solver, in [proofs/bfirst] and [proofs/afirst]. Rocq runs the checker
-    of [WinCert.v] (wins) or [Checker.v] (safety) on every entry, in
-    [vm_compute] ([Chunk*.v]). The checkers are proved sound for any table at
-    all ([Packed.v] ties them to the packed tables), so the tables need no
+    the solver, in [proofs/bfirst], [proofs/afirst] and [proofs/adraw]. Rocq
+    runs the checker of [WinCert.v] (wins), [Checker.v] (B's safety) or
+    [CheckerA.v] (A's safety) on every entry, in [vm_compute] ([Chunk*.v]).
+    The checkers are proved sound for any table at all ([Packed.v] and
+    [PackedA.v] tie them to the packed tables), so the tables need no
     trust. *)
 
 From TCB.Spec Require Import Model Game Claims.
 From TCB.Proofs Require Import GameFacts Progress Idle Preservation.
 From TCB.BFirst Require BFirst.
 From TCB.AFirst Require AFirst.
+From TCB.ADraw Require ADraw.
 
 Theorem never_stuck_holds : never_stuck.
 Proof. exact moves_ne. Qed.
@@ -35,6 +37,12 @@ Proof. exact AFirst.a_first_b_safe_proved. Qed.
 Theorem a_first_a_cannot_win_holds : a_first_a_cannot_win.
 Proof. intro Hw. exact (wins_not_safe PA _ Hw a_first_b_safe_holds). Qed.
 
+Theorem a_first_a_safe_holds : a_first_a_safe.
+Proof. exact ADraw.a_first_a_safe_proved. Qed.
+
+Theorem a_first_draw_holds : a_first_draw.
+Proof. exact (conj a_first_a_safe_holds a_first_b_safe_holds). Qed.
+
 Print Assumptions never_stuck_holds.
 Print Assumptions no_idle_moves_holds.
 Print Assumptions init_well_formed_holds.
@@ -42,3 +50,5 @@ Print Assumptions preservation_holds.
 Print Assumptions b_first_b_wins_holds.
 Print Assumptions a_first_b_safe_holds.
 Print Assumptions a_first_a_cannot_win_holds.
+Print Assumptions a_first_a_safe_holds.
+Print Assumptions a_first_draw_holds.

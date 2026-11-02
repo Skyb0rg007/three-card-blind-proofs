@@ -109,3 +109,9 @@ Definition a_first_b_safe : Prop := safe PB (init PA).
 
 (** ... so A has no winning strategy. *)
 Definition a_first_a_cannot_win : Prop := ~ wins PA (init PA).
+
+(** A, in turn, can avoid losing forever when it plays first ... *)
+Definition a_first_a_safe : Prop := safe PA (init PA).
+
+(** ... so neither player can force a win: the game is a draw. *)
+Definition a_first_draw : Prop := has_result Draw (init PA).

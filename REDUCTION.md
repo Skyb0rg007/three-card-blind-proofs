@@ -7,8 +7,8 @@ Where things stand:
   (`a_first_b_safe`).
 - **A first: B can't win either, so the game is a draw.** The solver finds
   A safe up to B life 20, exactly B's starting life, with every legal B move
-  (R7 and the last section). The checker for that kind of table and its
-  soundness are proved in Rocq; checking the table itself is in progress.
+  (R7 and the last section). Certified, and proved in Rocq
+  (`a_first_a_safe`, `a_first_draw`).
 
 A depth-bounded search can never show a draw. A draw needs two separate
 facts:
@@ -1160,7 +1160,9 @@ exactly 20.
 
 ## Status of the A-first draw proof
 
-- **The checker and its soundness: done.** `CheckerA.v` and `SaturationA.v`
+Done: `a_first_a_safe` and `a_first_draw` are proved in `Results.v`.
+
+- **The checker and its soundness.** `CheckerA.v` and `SaturationA.v`
   (R7) prove, closed under the global context, that a line-valued table
   that passes the checker proves A safe. This covers the BIG abstraction and
   R4 with A as protagonist. Every legal B move is on, so R6 isn't needed.
@@ -1168,13 +1170,26 @@ exactly 20.
   solver's `fin` bound copies a level's values from the level below by
   A-life monotonicity, which the checker can't use at an exact A life. The
   opening's line is still c = 20, b = 0.
-- **Checking it: done.** The extracted `CheckerA.check_node`
-  (`main.exe certify-a`) passes on all 5,879,511 entries reachable from the
-  opening, 0 failures, in two passes (the second with the lookup restricted
-  to exactly those entries, as Rocq will have it). The first run found one
-  place where the checker was stricter than the solver: after a pump on BIG,
-  n is at least 1, but lines were compared for every n ≥ 0. `check_node`
-  now carries that lower bound `lo` (0 at an entry, +1 per pump on BIG, 0 on
-  a new BIG) and compares lines for n ≥ lo.
-- **Then:** pack the reached entries into Rocq as `proofs/afirst` is, state
-  `safe PA (init PA)` in `spec/Claims.v` and prove it in `Results.v`.
+- **The extracted check.** `main.exe certify-a` runs the extracted
+  `CheckerA.check_node` from the opening's entry, with a memoised oracle
+  choosing A's moves, and collects every entry it consults: 5,879,511
+  entries, c in −16..100, b in 0..8. All of them pass, also with the lookup
+  restricted to exactly that set. The first run found one place where the
+  checker was stricter than the solver: after a pump on BIG, n is at least
+  1, but lines were compared for every n ≥ 0. `check_node` now carries that
+  lower bound `lo` (0 at an entry, +1 per pump on BIG, 0 on a new BIG) and
+  compares lines for n ≥ lo.
+- **In Rocq.** `certify-a-export` checks those entries once more as Rocq
+  will (A tries its moves in order: Rocq's hint is `true`; fuel 200) and
+  writes `proofs/adraw`. `PackedA.v` reads the table: each column is cut
+  into parts of 2^20 entries, because a primitive array holds at most
+  about 4.2M. B's life in the entries is M = 64 (the solver's checks used
+  200): the checker's nats are unary in Rocq, and B's life is the largest
+  one it handles, so 64 halves the time. It only has to exceed what B can
+  lose in one turn: 25 is too small (B dies inside a turn), 40 passed on
+  the samples tried.
+- **Cost.** The extracted check makes 312.6M lookups (about 1 CPU-hour in
+  OCaml). Rocq takes about 15.5 CPU-hours over 128 chunks, balanced by
+  that count (4–10 minutes and 0.85 GB each). A lookup costs about 40 µs
+  in the VM, so lookups are about a quarter of the time; the rest is the
+  checker's search itself (`moves`, `step`, `norm` at each node).

@@ -40,7 +40,7 @@ This repo contains a [Rocq][] mechanization of the problem and a proof of the so
 |---|---|---|
 | B plays first | B can force a win | proved in Rocq |
 | A plays first | A can't force a win | proved in Rocq |
-| A plays first | B can't force a win, so the game is a draw | found by the solver; the Rocq proof is in progress |
+| A plays first | B can't force a win, so the game is a draw | proved in Rocq |
 
 Rocq also proves three facts about the model itself (all in `spec/Claims.v`):
 
@@ -53,22 +53,19 @@ Rocq also proves three facts about the model itself (all in `spec/Claims.v`):
 
 ### The A-first draw
 
-The missing half is that A never loses going first. The solver finds this
+The second half is that A never loses going first. The solver finds this
 with every legal B move: A is safe up to B life 20, which is exactly B's
 starting life. The table behind it treats one of A's Walkers as unbounded:
 it stands for K + n counters for every n ≥ 0, and each position stores a line
 c + b n, the most life B can have there with A still safe.
 
-The Rocq side of that argument is already proved for any table:
 `proofs/core/CheckerA.v` checks line-valued tables, and
 `proofs/core/SaturationA.v` proves the checker sound, both for A's unbounded
-Walker and for B's Walker saturated at a fixed size (closed under the global
-context). The checker, extracted to OCaml, passes on all 5.88M table entries
-reachable from the opening, and the opening's line is c = 20, b = 0. What
-remains is to pack that table into Rocq as `proofs/afirst` already is, so
-that Rocq runs the check itself, and to state the claim `safe PA (init PA)`
-in `spec/Claims.v`. Until then this half rests on the extracted check.
-`REDUCTION.md` (the end) has the details.
+Walker and for B's Walker saturated at a fixed size. `proofs/adraw` holds
+the solver's table (the 5.9M positions the check of the opening reaches),
+and Rocq checks every entry of it, so `safe PA (init PA)` (`a_first_a_safe`)
+is a theorem, and with `a_first_b_safe` the A-first game is a draw
+(`a_first_draw`). `REDUCTION.md` (R7 and the end) has the details.
 
 `STRATEGY.md` describes, in plain Magic terms, how B wins when B plays first.
 
@@ -97,10 +94,11 @@ The repository is split so that you only have to read one directory.
   - `core/Progress.v`, `core/Preservation.v` and `core/Idle.v` prove the facts
     about the model: `never_stuck`, `preservation` and `no_idle_moves`.
   - `core/Packed.v` stores such a table compactly in primitive arrays, and proves
-    that if every entry passes the checker, the claim holds.
-  - `bfirst/` and `afirst/` hold the two tables (`Data.v.xz`, computed by the
-    solver). Each `Chunk*.v` runs the checker on a slice of the table with
-    `vm_compute`.
+    that if every entry passes the checker, the claim holds. `core/PackedA.v`
+    does the same for line-valued tables.
+  - `bfirst/`, `afirst/` and `adraw/` hold the three tables (`Data*.v.xz`,
+    computed by the solver). Each `Chunk*.v` runs the checker on a slice of
+    the table with `vm_compute`.
 
 Build everything with:
 
@@ -108,9 +106,12 @@ Build everything with:
 nix-shell --run 'dune build -j 4'
 ```
 
-This takes about 2.5 CPU-hours (50 minutes with `-j 3`): Rocq runs the checker on 1.5M positions for
-the B-first claim and 1.6M for the A-first one. Each job needs about 1 GB of
-memory, so choose `-j` to fit your machine.
+This takes about 18 CPU-hours: Rocq runs the checker on 1.5M positions for
+the B-first claim, 1.6M for A-first B-safe (together about 2.5 CPU-hours)
+and 5.9M for A-first A-safe (`proofs/adraw`, about 15.5 CPU-hours: 128
+chunks of 4–10 minutes each). Each job needs about 1 GB of memory (the two
+`Data.v` files of `proofs/afirst` and `proofs/bfirst` need about 3 GB each
+while they compile), so choose `-j` to fit your machine.
 
 For each theorem in `proofs/results/Results.v`, the build prints the
 assumptions it rests on. The only ones are Rocq's primitive 63-bit integers
@@ -131,7 +132,7 @@ Only Rocq itself: its kernel, including the bytecode virtual machine behind
 `vm_compute`, and its primitive integers and arrays, which the kernel computes
 with machine operations.
 
-You don't have to trust the tables in `proofs/bfirst` and `proofs/afirst`,
+You don't have to trust the tables in `proofs/bfirst`, `proofs/afirst` and `proofs/adraw`,
 the solver that computed them (`rsolver/`, `solver/`), or `xz`. Rocq checks
 every entry of each table during the build. The theorems in `proofs/core`
 say that any table whose entries all pass that check proves the claim, so a
@@ -157,11 +158,20 @@ $C certify-safe-export tables/bsafe-afirst-10-full A proofs/afirst 48 200
 # B plays first: B wins
 env $COMMON TCB_RANKS=1 TCB_OT=14 TCB_OTT=14 TCB_SAVE=tables/bwin-bfirst-14-full $R fix win B 4 14 100 B
 $C certify-win-export tables/bwin-bfirst-14-full B proofs/bfirst 48 200
+
+# A plays first: A is safe (one unbounded A Walker, lines c + b n)
+env TCB_BIG=1 TCB_BIGCHECK=1 TCB_MACRO=1 TCB_FULLOPP=1 TCB_NOBOUND=1 TCB_OT=6 TCB_OTT=6 \
+  TCB_AMACRO=atk2,pump,order,dmg TCB_SAVE=tables/asafe-afirst-big $R fix safe A 20 8 100 A
+$C certify-a tables/asafe-afirst-big A tables/asafe-afirst-big.entries
+TCB_M=64 TCB_FUEL=200 $C certify-a-export tables/asafe-afirst-big.entries A proofs/adraw 128
 ```
 
 The export keeps only the positions the check of the opening reaches, runs
 the same check as Rocq (the checkers extracted to OCaml) and writes the
-Rocq files.
+Rocq files. For the A-safe table these are two steps: `certify-a` collects
+the reached positions (with an untrusted oracle choosing A's moves) and
+`certify-a-export` checks them again exactly as Rocq will, with A trying
+every move in order.
 
 `REDUCTION.md` explains how the search space was reduced to make these
 tables small enough to compute.
