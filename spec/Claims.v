@@ -20,6 +20,14 @@ From TCB.Spec Require Import Model Game.
     left without a reply, because nobody can move. *)
 Definition never_stuck : Prop := forall s, winner s = None -> moves s <> nil.
 
+(** No legal move leaves the state as it was. Otherwise a player could
+    repeat that move forever and stall into a draw the real game doesn't
+    have. (Long games are still possible, for instance both players passing
+    every turn; under rule F5 that is a draw, and each step of it is a real
+    game action.) [step] on an illegal move returns its input, but nothing
+    in [Game.v] applies [step] to an illegal move. *)
+Definition no_idle_moves : Prop := forall s m, In m (moves s) -> step s m <> s.
+
 (** Legal moves keep a state well formed (as type preservation goes with
     progress). A well-formed state holds each player's cards, no more and no
     fewer, and its combat only refers to Walkers and Thopters that exist.

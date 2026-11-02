@@ -80,6 +80,9 @@ From <https://www.3cardblind.com/format-info/rules>, retrieved 2026-10-30
   - Legal play keeps every position well formed: each player keeps all their
     cards, and combat only refers to Walkers and Thopters that exist
     (`preservation` in `Claims.v`, proved in Rocq).
+  - Every legal move changes the position, so an endless game can't come
+    from repeating a move that does nothing (`no_idle_moves` in `Claims.v`,
+    proved in Rocq).
 - **Simultaneous loss.** Players can only lose life to combat damage from the
   active player's unblocked attackers. Both players can therefore never reach
   0 life at the same moment, and CR 104.4a never applies.
