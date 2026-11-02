@@ -131,14 +131,68 @@ let oracle p lk =
 
 let check p lk hint s c b = a_check_node p.k p.hb p.ott p.tt lk hint p.fuel true (a_entry p.m s) c b
 
-(* Why [check_node] fails from the entry [s] with line (c, b): A's moves
-   with their results at each A node (following the first, or the one
-   [pick] names), B's first failing move at each B node, down to the leaf
-   that fails. *)
+(* The solver's line for a node (rsolver's [eval_go_big] for A-safe, over
+   every legal move): A's nodes pick the line larger at n = [r], B's take
+   the componentwise min, edges apply [ltrans]. [None] is lost for A. *)
+let solver_line p lk r =
+  let memo = S.create 1024 in
+  let pick a b =
+    match a, b with
+    | None, x | x, None -> x
+    | Some (c, b), Some (c', b') -> if (c + (b * r), c, b) >= (c' + (b' * r), c', b') then a else Some (c', b')
+  in
+  let lmin a b = match a, b with Some (c, b), Some (c', b') -> Some (min c c', min b b') | _ -> None in
+  let rec node root s =
+    match winner s with
+    | Some _ -> None
+    | None ->
+      if (not root) && is_turn_start s then lk (a_key p.hb p.tt s)
+      else if a_huge_event p.hb s || a_big_event p.k s then None
+      else
+        match S.find_opt memo s with
+        | Some v when not root -> v
+        | _ ->
+          let vs = List.map (edge s) (moves s) in
+          let v =
+            match to_move s with
+            | PA -> List.fold_left pick None vs
+            | PB -> (match vs with [] -> None | x :: l -> List.fold_left lmin x l)
+          in
+          if not root then S.replace memo s v;
+          v
+  and edge s m =
+    if a_is_create p.k s m && a_has_big p.k s then None
+    else
+      let s' = a_stepA p.k p.hb p.tt s m in
+      if a_too_many p.ott s' then None
+      else
+        match winner s' with
+        | Some _ -> None
+        | None ->
+          let d = blife s' - blife s and hit = if a_is_hit p.k s then 1 else 0 in
+          let v =
+            match node false s' with
+            | None -> None
+            | Some (c, b) ->
+              let b = if a_is_create p.k s m then 0 else b in
+              let c = if a_is_pump_big p.k s m then c + b else c in
+              Some (c - d, b + hit)
+          in
+          if d < 0 then pick (Some (-d, hit)) v else v
+  in
+  (node, edge)
+
+(* Why [check_node] fails from the entry [s] with line (c, b). At each node
+   every move is shown with the line it asks of the child (CheckerA) and
+   the child's solver line seen from here; A follows the solver's choice,
+   B its first move whose child fails. *)
 let explain p lk s0 c0 b0 =
   let ok, _, _ = oracle p lk in
+  let node, sedge = solver_line p lk 20 in
   let s0 = a_entry p.m s0 in
-  Printf.printf "entry line (%d, %d), oracle %b\n%s\n" c0 b0 (ok true s0 c0 b0) (Show.state s0);
+  let sl = function None -> "lost" | Some (c, b) -> Printf.sprintf "(%d,%d)" c b in
+  Printf.printf "entry line (%d, %d), oracle %b, solver %s\n%s\n" c0 b0 (ok true s0 c0 b0) (sl (node true s0))
+    (Show.state s0);
   let edge s c b m =
     if a_is_create p.k s m && a_has_big p.k s then (None, "second BIG")
     else
@@ -154,7 +208,8 @@ let explain p lk s0 c0 b0 =
           let b2 = if a_is_hit p.k s then b1 - 1 else b1 in
           let flags = String.concat "" [ (if a_is_pump_big p.k s m then " pump-BIG" else "");
                                          (if a_is_create p.k s m then " create" else "");
-                                         (if a_is_hit p.k s then " hit" else "") ] in
+                                         (if a_is_hit p.k s then " hit" else "");
+                                         (Printf.sprintf " d=%d" (blife s' - blife s)) ] in
           if c2 <= 0 && b2 <= 0 then (None, "B dead" ^ flags)
           else (Some (s', c2, b2), Printf.sprintf "(%d,%d)%s %b" c2 b2 flags (ok false s' c2 b2))
   in
@@ -165,19 +220,20 @@ let explain p lk s0 c0 b0 =
     | None ->
       if (not root) && is_turn_start s then begin
         let k = a_key p.hb p.tt s in
-        Printf.printf "%sturn start, needs (%d, %d)%s, table %s\n%s%s\n" ind c b
+        Printf.printf "%sturn start, needs (%d, %d)%s, table %s, packed key %d %d\n%s%s\n" ind c b
           (if a_has_big p.k s then " BIG" else "")
           (match lk k with Some (c', b') -> Printf.sprintf "(%d, %d)" c' b' | None -> "none")
-          ind (Show.state s)
+          (fst (Certify.enc k)) (snd (Certify.enc k)) ind (Show.state s)
       end
       else if a_huge_event p.hb s then Printf.printf "%shuge event\n%s\n" ind (Show.state s)
       else if a_big_event p.k s then Printf.printf "%sBIG could die\n%s\n" ind (Show.state s)
       else if depth > 80 then print_endline "too deep"
       else begin
-        let res = List.map (fun m -> (m, edge s c b m)) (moves s) in
-        Printf.printf "%s%s to move, line (%d, %d): %s\n" ind (Show.player (to_move s)) c b
-          (String.concat "; " (List.map (fun (m, (_, r)) -> Show.move m ^ " -> " ^ r) res));
-        let failing (_, (nx, r)) =
+        let res = List.map (fun m -> (m, edge s c b m, sedge s m)) (moves s) in
+        Printf.printf "%s%s to move, line (%d, %d), solver %s: %s\n" ind (Show.player (to_move s)) c b
+          (sl (node true s))
+          (String.concat "; " (List.map (fun (m, (_, r), v) -> Show.move m ^ " -> " ^ r ^ " solver " ^ sl v) res));
+        let failing (_, (nx, r), _) =
           match nx with
           | Some (s', c', b') -> not (ok false s' c' b')
           | None -> not (String.length r >= 6 && String.sub r 0 6 = "B dead")
@@ -185,19 +241,67 @@ let explain p lk s0 c0 b0 =
         let pick =
           match to_move s with
           | PB -> List.find_opt failing res
-          | PA -> (match List.find_opt (fun x -> fst (snd x) <> None) res with Some x -> Some x | None -> None)
+          | PA ->
+            let best = node true s in
+            List.find_opt (fun (_, _, v) -> v = best) res
         in
         match pick with
-        | Some (m, (Some (s', c', b'), _)) ->
+        | Some (m, (Some (s', c', b'), _), _) ->
           Printf.printf "%s> %s %s\n" ind (Show.player (to_move s)) (Show.move m);
           go (depth + 1) false s' c' b'
-        | _ -> ()
+        | Some (m, (None, r), _) -> Printf.printf "%s> %s %s: %s\n" ind (Show.player (to_move s)) (Show.move m) r
+        | None -> ()
       end
   in
   go 0 true s0 c0 b0
 
-(* Entries are kept packed as [Certify.enc] does (Packed.v's layout, [dec]
-   below inverts it), with the line as [16 c + b]. *)
+(* The collected entries, outside the OCaml heap so that the forked workers
+   share them (a heap would be copied page by page as their GC marks it):
+   an open-addressing table over memory-mapped files, keyed by the packed
+   key (stored + 1, so 0 is empty), with the line as [16 c + b]. *)
+module Tbl = struct
+  open Bigarray
+
+  type t = {
+    cap : int;
+    a : (int, int_elt, c_layout) Array1.t;
+    b : (int, int_elt, c_layout) Array1.t;
+    v : (int, int_elt, c_layout) Array1.t;
+    mutable n : int;
+  }
+
+  let create base cap =
+    if cap land (cap - 1) <> 0 then failwith "certify-a: TCB_CAP must be a power of 2";
+    let m s =
+      let p = base ^ s in
+      Disk.remove p;
+      Disk.map int p cap ~write:true
+    in
+    { cap; a = m ".a"; b = m ".b"; v = m ".v"; n = 0 }
+
+  let rec probe t k1 k2 i =
+    let x = Array1.unsafe_get t.a i in
+    if x = 0 || (x = k1 + 1 && Array1.unsafe_get t.b i = k2) then i else probe t k1 k2 ((i + 1) land (t.cap - 1))
+
+  let slot t (k1, k2) = probe t k1 k2 (Hashtbl.hash (k1, k2) land (t.cap - 1))
+  let find t e = let i = slot t e in if t.a.{i} = 0 then None else Some t.v.{i}
+  let mem t e = find t e <> None
+
+  let add t ((k1, k2) as e) v =
+    let i = slot t e in
+    if t.a.{i} = 0 then begin
+      if 2 * (t.n + 1) > t.cap then failwith "certify-a: the entry table is full (raise TCB_CAP)";
+      t.a.{i} <- k1 + 1; t.b.{i} <- k2; t.v.{i} <- v; t.n <- t.n + 1;
+      true
+    end
+    else false
+
+  (* Slots [lo, hi) that hold entries. *)
+  let iter_range t lo hi f = for i = lo to hi - 1 do if t.a.{i} <> 0 then f (t.a.{i} - 1, t.b.{i}) t.v.{i} done
+end
+
+(* Entries are packed as [Certify.enc] does (Packed.v's layout; [dec] below
+   inverts it). *)
 let enc = Certify.enc
 
 let field x off w = (x lsr off) land ((1 lsl w) - 1)
@@ -229,7 +333,10 @@ let run dir starter outfile p =
   let t = open_table dir in
   let lk = lookup t in
   let wdir = Filename.dirname outfile in
+  let pid = Unix.getpid () in
+  let tmp s = Filename.concat wdir (Printf.sprintf "certa-%d-%s" pid s) in
   let t0 = Unix.gettimeofday () in
+  let cap = 1 lsl (match Sys.getenv_opt "TCB_CAP" with Some c -> int_of_string c | None -> 25) in
   Printf.printf "certify-a %s: %d bases, %d levels; K=%d Hb=%d ott=%d tt=%d M=%d fuel=%d\n%!" dir t.sv.Fix.nb
     t.sv.Fix.nl p.k p.hb p.ott p.tt p.m p.fuel;
   let s0 = init starter in
@@ -238,20 +345,21 @@ let run dir starter outfile p =
   Printf.printf "opening: line (%d, %d), B has %d life, BIG %b\n%!" c0 b0 s0.sideB.life (a_has_big p.k s0);
   (* pass 1, a layer at a time: the workers check a slice of the frontier
      each and write the entries their checks consult that aren't known yet *)
-  let used = Hashtbl.create 4_000_000 in
+  let used = Tbl.create (tmp "used") cap in
   let key_of s =
     let e = enc s in
     if dec e <> s then failwith ("certify-a: a state the packing doesn't keep: " ^ Show.state s);
     e
   in
   let e0 = key_of k0 in
-  Hashtbl.replace used e0 (lenc (c0, b0));
-  let frontier = ref [| e0 |] and fails = ref [] and layer = ref 0 and pid = Unix.getpid () in
+  ignore (Tbl.add used e0 (lenc (c0, b0)));
+  let failf = open_out (outfile ^ ".fail") in
+  let frontier = ref [| e0 |] and fails = ref 0 and shown = ref 0 and layer = ref 0 in
   while Array.length !frontier > 0 do
     let fr = !frontier in
     let nf = Array.length fr in
     let w = Par.workers nf 2000 in
-    let name k = Filename.concat wdir (Printf.sprintf "layer-%d-%d" pid k) in
+    let name k = tmp (Printf.sprintf "layer-%d" k) in
     let bad =
       Par.map ~dir:wdir w (fun k ->
           let a, b = Par.chunk nf w k in
@@ -261,7 +369,7 @@ let run dir starter outfile p =
             match lk s with
             | Some v ->
               let e = key_of s in
-              if not (Hashtbl.mem used e || Hashtbl.mem seen e) then begin
+              if not (Tbl.mem used e || Hashtbl.mem seen e) then begin
                 Hashtbl.replace seen e ();
                 let k1, k2 = e in
                 Printf.fprintf oc "+ %d %d %d\n" k1 k2 (lenc v)
@@ -272,7 +380,7 @@ let run dir starter outfile p =
           let ok, hint, reset = oracle p lk in
           let bad = ref 0 in
           for j = a to b - 1 do
-            let s = dec fr.(j) and c, b = ldec (Hashtbl.find used fr.(j)) in
+            let s = dec fr.(j) and c, b = ldec (Option.get (Tbl.find used fr.(j))) in
             reset ();
             let o = ok true (a_entry p.m s) c b in
             let r = check p logging hint s c b in
@@ -291,60 +399,87 @@ let run dir starter outfile p =
           match String.split_on_char ' ' l with
           | [ "+"; k1; k2; v ] ->
             let e = (int_of_string k1, int_of_string k2) in
-            if not (Hashtbl.mem used e) then begin
-              Hashtbl.replace used e (int_of_string v);
-              next := e :: !next
-            end
-          | [ "-"; k1; k2 ] -> fails := (int_of_string k1, int_of_string k2) :: !fails
+            if Tbl.add used e (int_of_string v) then next := e :: !next
+          | [ "-"; k1; k2 ] ->
+            let e = (int_of_string k1, int_of_string k2) in
+            let c, b = ldec (Option.get (Tbl.find used e)) in
+            incr fails;
+            Printf.fprintf failf "%s %s %d %d\n%!" k1 k2 c b;
+            if !shown < 3 then (incr shown; explain p lk (dec e) c b)
           | _ -> print_endline l)
     done;
     incr layer;
     frontier := Array.of_list !next;
     Printf.printf "  pass 1, layer %d: %d checked (%d failed), %d new, %d collected (%.0fs)\n%!" !layer nf
-      (Array.fold_left ( + ) 0 bad) (Array.length !frontier) (Hashtbl.length used) (Unix.gettimeofday () -. t0)
+      (Array.fold_left ( + ) 0 bad) (Array.length !frontier) used.Tbl.n (Unix.gettimeofday () -. t0)
   done;
-  let n = Hashtbl.length used in
-  Printf.printf "pass 1: %d entries collected, %d failed (%.1fs)\n%!" n (List.length !fails) (Unix.gettimeofday () -. t0);
-  List.iteri (fun j e -> if j < 3 then let c, b = ldec (Hashtbl.find used e) in explain p lk (dec e) c b) !fails;
+  close_out failf;
+  let n = used.Tbl.n in
+  Printf.printf "pass 1: %d entries collected, %d failed (%.1fs)\n%!" n !fails (Unix.gettimeofday () -. t0);
   (* pass 2: lookup restricted to the closure, as Rocq will; A's moves from
      the oracle, or every move with TCB_HINT=all (as Rocq's hint) *)
   let restricted s =
     let e = enc s in
-    match Hashtbl.find_opt used e with Some v when dec e = s -> Some (ldec v) | _ -> None
+    match Tbl.find used e with Some v when dec e = s -> Some (ldec v) | _ -> None
   in
   let all = Sys.getenv_opt "TCB_HINT" = Some "all" in
-  let recs = Hashtbl.fold (fun e v acc -> (e, v) :: acc) used [] |> List.sort compare |> Array.of_list in
   let w = Par.workers n 2000 in
   let bad2 =
     Par.map ~dir:wdir w (fun k ->
-        let a, b = Par.chunk n w k in
+        let lo, hi = Par.chunk cap w k in
         let ok2, hint2, reset2 = oracle p restricted in
         let bad = ref 0 in
-        for j = a to b - 1 do
-          let e, v = recs.(j) in
-          let s = dec e and c, b = ldec v in
-          let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b); hint2) in
-          if not (check p restricted h s c b) then incr bad
-        done;
+        Tbl.iter_range used lo hi (fun e v ->
+            let s = dec e and c, b = ldec v in
+            let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b); hint2) in
+            if not (check p restricted h s c b) then incr bad);
         !bad)
     |> Array.fold_left ( + ) 0
   in
   Printf.printf "pass 2 (closure only, hint %s): %d of %d failed (%.1fs)\n%!" (if all then "all" else "oracle") bad2 n
     (Unix.gettimeofday () -. t0);
+  (* the entries, sorted by packed key *)
+  let raw = tmp "entries" in
+  let oc = open_out raw in
+  let minc = ref max_int and maxc = ref min_int and maxb = ref 0 in
+  Tbl.iter_range used 0 cap (fun (k1, k2) v ->
+      let c, b = ldec v in
+      minc := min !minc c; maxc := max !maxc c; maxb := max !maxb b;
+      Printf.fprintf oc "%d %d %d %d\n" k1 k2 c b);
+  close_out oc;
   let oc = open_out outfile in
   Printf.fprintf oc "# certify-a %s K=%d Hb=%d ott=%d tt=%d M=%d: %d entries; k1 k2 c b (Packed.enc keys, sorted)\n" dir
     p.k p.hb p.ott p.tt p.m n;
-  Array.iter (fun ((k1, k2), v) -> let c, b = ldec v in Printf.fprintf oc "%d %d %d %d\n" k1 k2 c b) recs;
   close_out oc;
-  let cs = Array.map (fun (_, v) -> fst (ldec v)) recs and bs = Array.map (fun (_, v) -> snd (ldec v)) recs in
-  Printf.printf "wrote %d entries to %s (c in %d..%d, b up to %d)\n" n outfile (Array.fold_left min max_int cs)
-    (Array.fold_left max min_int cs) (Array.fold_left max 0 bs);
-  if !fails = [] && bad2 = 0 && b0 = 0 && c0 >= s0.sideB.life then
+  if Sys.command (Printf.sprintf "LC_ALL=C sort -n -k1,1 -k2,2 %s >> %s" (Filename.quote raw) (Filename.quote outfile)) <> 0
+  then failwith "certify-a: sort failed";
+  Sys.remove raw;
+  List.iter (fun s -> Disk.remove (tmp "used" ^ s)) [ ".a"; ".b"; ".v" ];
+  Printf.printf "wrote %d entries to %s (c in %d..%d, b up to %d)\n" n outfile !minc !maxc !maxb;
+  if !fails = 0 && bad2 = 0 && b0 = 0 && c0 >= s0.sideB.life then
     print_endline "certified: A is safe from the opening"
   else print_endline "not certified"
+
+(* [explain] for an entry given by its packed key. *)
+let debug_packed dir k1 k2 c b p =
+  let t = open_table dir in
+  explain p (lookup t) (dec (k1, k2)) c b
 
 let debug dir hex c b p =
   let t = open_table dir in
   let s = Fix.of_key (Fix.unhex hex) in
   let s = { s with sideB = { s.sideB with life = 0 } } in
   explain p (lookup t) s c b
+
+(* The table's line for the position packed as (k1, k2) at every A life. *)
+let levels dir k1 k2 =
+  let t = open_table dir in
+  let s = dec (k1, k2) in
+  Printf.printf "%s\n" (Show.state s);
+  for l = 1 to t.sv.Fix.nl do
+    let s = { s with sideA = { s.sideA with life = l } } in
+    Printf.printf "A life %2d: %s\n" l
+      (match index t s with
+       | None -> "no position"
+       | Some i -> let c, b = line t i in if c <= Fix.ninf then "lost" else Printf.sprintf "(%d, %d)" c b)
+  done
