@@ -130,6 +130,62 @@ let oracle p lk =
   let reset () = H.reset memo; S.reset good in
   (ok, hint, reset)
 
+(* TCB_CHOOSE=1 (experiment): A's moves chosen to add the least weight
+   [w] of turn-start keys (A's nodes the minimum over their working moves,
+   B's the sum over its moves). The hint allows exactly the chosen moves. *)
+let chooser p lk (w : state -> float) =
+  let memo = H.create 1024 and good = S.create 256 in
+  let inf = infinity in
+  let rec cost root s c b lo =
+    match winner s with
+    | Some _ -> inf
+    | None ->
+      if (not root) && is_turn_start s then
+        let k = a_key p.hb p.tt s in
+        match lk k with
+        | Some (c', b') when c + (b * lo) <= c' + (b' * lo) && ((not (a_has_big p.k s)) || b <= b') -> w k
+        | _ -> inf
+      else if a_huge_event p.hb s || a_big_event p.k s then inf
+      else
+        match H.find_opt memo (s, c, b, lo, root) with
+        | Some r -> if r < 0. then inf else r
+        | None ->
+          let r =
+            match to_move s with
+            | PA ->
+              let best = ref inf and bm = ref None in
+              List.iter (fun m -> let x = next s c b lo m in if x < !best then (best := x; bm := Some m)) (moves s);
+              (match !bm with
+               | Some m ->
+                 let l = Option.value (S.find_opt good s) ~default:[] in
+                 if not (List.mem m l) then S.replace good s (m :: l)
+               | None -> ());
+              !best
+            | PB -> List.fold_left (fun acc m -> if acc = inf then inf else acc +. next s c b lo m) 0. (moves s)
+          in
+          H.replace memo (s, c, b, lo, root) (if r = inf then -1. else r);
+          r
+  and next s c b lo m =
+    if a_is_create p.k s m && a_has_big p.k s then inf
+    else
+      let s' = a_stepA p.k p.hb p.tt s m in
+      if a_too_many p.ott s' then inf
+      else
+        match winner s' with
+        | Some _ -> inf
+        | None ->
+          let c1 = if a_is_pump_big p.k s m then c - b else c in
+          let b1 = if a_is_create p.k s m then 0 else b in
+          let c2 = c1 + (blife s' - blife s) in
+          let b2 = if a_is_hit p.k s then b1 - 1 else b1 in
+          let lo2 = if a_is_pump_big p.k s m then lo + 1 else if a_is_create p.k s m then 0 else lo in
+          if c2 + (b2 * lo2) <= 0 && b2 <= 0 then 0. else cost false s' c2 b2 lo2
+  in
+  let ok root s c b lo = cost root s c b lo < inf in
+  let hint s m = match S.find_opt good s with Some l -> List.mem m l | None -> false in
+  let reset () = H.reset memo; S.reset good in
+  (ok, hint, reset)
+
 let check p lk hint s c b = a_check_node p.k p.hb p.ott p.tt lk hint p.fuel true (a_entry p.m s) c b 0
 
 (* The solver's line for a node (rsolver's [eval_go_big] for A-safe, over
@@ -354,6 +410,23 @@ let run dir starter outfile p =
     e
   in
   let used = Tbl.create ~keep:resume (st ^ "-used") cap in
+  (* TCB_DOM=1 (experiment): answer each lookup with the entry of the same
+     position at the lowest A life whose line is at least as high (A safe
+     with less life is safe with more: Mono.safe_bump). Pass 2 doesn't know
+     about it. *)
+  let dom = Sys.getenv_opt "TCB_DOM" = Some "1" in
+  let choose = Sys.getenv_opt "TCB_CHOOSE" = Some "1" in
+  let dom_rep s =
+    match lk s with
+    | None -> s
+    | Some (c, b) ->
+      let best = ref s in
+      for l = s.sideA.life - 1 downto 1 do
+        let s' = { s with sideA = { s.sideA with life = l } } in
+        match lk s' with Some (c', b') when c' >= c && b' >= b -> best := s' | _ -> ()
+      done;
+      !best
+  in
   let phase, done_, fails =
     if resume then (
       let ic = open_in st in
@@ -390,6 +463,7 @@ let run dir starter outfile p =
               let oc = open_out (name k) in
               let seen = Hashtbl.create 1024 in
               let logging s =
+                let s = if dom then dom_rep s else s in
                 match lk s with
                 | Some v ->
                   let e = key_of s in
@@ -401,7 +475,9 @@ let run dir starter outfile p =
                   Some v
                 | None -> None
               in
-              let ok, hint, reset = oracle p lk in
+              let ok, hint, reset =
+                if choose then chooser p lk (fun k -> if Tbl.mem used (key_of (if dom then dom_rep k else k)) then 0. else 1.)
+                else oracle p lk in
               let bad = ref 0 in
               for j = a to b - 1 do
                 let s = dec fr.(j) and c, b = vline (Option.get (Tbl.find used fr.(j))) in

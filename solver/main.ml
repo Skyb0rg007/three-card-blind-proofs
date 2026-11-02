@@ -451,6 +451,8 @@ let () =
   | [| _; "certify-a"; dir; starter; out |] -> Certifya.run dir (pl starter) out (a_params ())
   | [| _; "certify-a-export"; entries; starter; outdir; chunks |] ->
     Certifya.export entries (pl starter) ~outdir ~chunks:(int_of_string chunks) (a_params ())
+  | [| _; "shrink-safe"; dir; starter; rounds |] -> Shrink.run dir (pl starter) (int_of_string rounds)
+  | [| _; "dom-safe"; dir; starter; sym; dom |] -> Shrink.dom_safe dir (pl starter) (sym = "1") (int_of_string dom)
   | [| _; "rechunk"; dir; chunks |] -> Certify.rechunk dir (int_of_string chunks)
   | [| _; "certify-a-debug"; dir; hex; c; b |] ->
     Certifya.debug dir hex (int_of_string c) (int_of_string b) (a_params ())
