@@ -170,3 +170,30 @@ let dom_safe dir starter sym domk =
   Printf.printf "entries by A life:";
   Array.iteri (fun l n -> if n > 0 then Printf.printf " %d:%d" l n) hist;
   print_newline ()
+
+(* [amono DIR] (experiment): in an A-safe BIG table, how a position's line
+   (c, b) varies with A's life. Counts bases whose finite lines are
+   componentwise non-decreasing in A's life, a chain in some other order,
+   or neither. *)
+let amono dir =
+  let t = Certifya.open_table dir in
+  let sv = t.Certifya.sv in
+  let nb = sv.Fix.nb and nl = sv.Fix.nl in
+  let mono = ref 0 and chain = ref 0 and neither = ref 0 and single = ref 0 and steps = ref 0 and bad = ref 0 in
+  for b = 0 to nb - 1 do
+    let ls = List.filter_map (fun slot ->
+        let i = (slot * nb) + b in
+        let c, be = Certifya.line t i in
+        if c <= Fix.ninf || c >= Fix.inf then None else Some (Fix.life_of_slot sv slot, c, be))
+        (List.init nl Fun.id) in
+    let le (_, c, b) (_, c', b') = c <= c' && b <= b' in
+    if List.length ls < 2 then incr single
+    else begin
+      let rec m = function x :: (y :: _ as r) -> incr steps; if not (le x y) then incr bad; le x y && m r | _ -> true in
+      if m ls then incr mono
+      else if List.for_all (fun x -> List.for_all (fun y -> le x y || le y x) ls) ls then incr chain
+      else incr neither
+    end
+  done;
+  Printf.printf "amono: %d bases: %d with < 2 lines, %d non-decreasing, %d chains otherwise, %d neither; %d of %d steps decrease\n"
+    nb !single !mono !chain !neither !bad !steps

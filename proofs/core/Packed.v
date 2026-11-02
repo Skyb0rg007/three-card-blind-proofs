@@ -8,15 +8,22 @@
 
     A record is a turn start packed into two integers ([enc]) and a value
     (for wins, a rank and a value) packed into a third. The arrays are
-    sorted by key (then rank).
-    Nothing about the packing needs to be trusted: [lookup] only answers for
-    a state that decodes back to itself ([dec], checked with [state_eqb]),
-    and every record is checked as the state it decodes to. *)
+    sorted by key without A's life, then by A's life.
+
+    A lookup may answer with the record of the same position at a higher A
+    life (B safe or winning against more A life also is against less): the
+    checkers' hypotheses allow it ([Checker.cert_ok], [WinCert.cert_ok]),
+    so the table only needs the positions that dominate the others.
+
+    Nothing about the packing needs to be trusted: [lookup] only answers
+    with a record that decodes to the looked-up state with A's life raised
+    (checked with [state_eqb]), and every record is checked as the state it
+    decodes to. *)
 
 From Stdlib Require Import List Bool Arith ZArith Lia Uint63 PArray.
 Import ListNotations.
 From TCB.Spec Require Import Model Game.
-From TCB.Proofs Require Import Checker Saturation WinCert.
+From TCB.Proofs Require Import Mono Checker Saturation WinCert.
 From TCB.Proofs Require Export StateEq.
 From TCB.Proofs Require MemoB.
 
@@ -182,7 +189,16 @@ Qed.
 
 End Ranges.
 
-(** ** Finding a key *)
+(** ** Finding a key, A's life left out
+
+    A's life is bits 0–4 of the first integer of a key. The records are
+    sorted by the key without it ([shr k1 5], then [k2]), then by A's life,
+    so all of A's lives of a position are next to each other: its run. A
+    lookup finds the run with a binary search and then chooses a record in
+    it. The choice needs no trust: the record it returns is checked to be
+    the looked-up state with A's life changed ([state_eqb] against a
+    [bump] of one by the other), which is all the soundness theorems
+    need. *)
 
 Section Keys.
 
@@ -190,31 +206,32 @@ Variables K1 K2 : array int.
 
 Definition key_lt (a1 a2 b1 b2 : int) : bool := ltb a1 b1 || (eqb a1 b1 && ltb a2 b2).
 
-(** The first index in [lo, hi) whose key is not below [(k1, k2)]. *)
-Fixpoint lower (f : nat) (lo hi k1 k2 : int) : int :=
+(** The first index in [lo, hi) whose key without A's life is not below
+    [(h, k2)]. *)
+Fixpoint lower (f : nat) (lo hi h k2 : int) : int :=
   match f with
   | O => lo
   | S f =>
       if ltb lo hi then
         let mid := shr (add lo hi) 1 in
-        if key_lt K1.[mid] K2.[mid] k1 k2 then lower f (add mid 1) hi k1 k2 else lower f lo mid k1 k2
+        if key_lt (shr K1.[mid] 5) K2.[mid] h k2 then lower f (add mid 1) hi h k2 else lower f lo mid h k2
       else lo
   end.
 
-Definition start (k1 k2 : int) : int := lower 32 0 (PArray.length K1) k1 k2.
+(** The start of the run of [(k1, k2)]. *)
+Definition start (k1 k2 : int) : int := lower 32 0 (PArray.length K1) (shr k1 5) k2.
 
-Definition at_key (j k1 k2 : int) : bool := ltb j (PArray.length K1) && eqb K1.[j] k1 && eqb K2.[j] k2.
+(** Index [j] is in the run of [(k1, k2)]. *)
+Definition in_run (j k1 k2 : int) : bool :=
+  ltb j (PArray.length K1) && eqb (shr K1.[j] 5) (shr k1 5) && eqb K2.[j] k2.
 
-Lemma at_key_spec : forall j k1 k2, at_key j k1 k2 = true ->
-  ltb j (PArray.length K1) = true /\ K1.[j] = k1 /\ K2.[j] = k2.
-Proof.
-  intros j k1 k2 Ha. unfold at_key in Ha.
-  apply andb_true_iff in Ha as [Ha E2]. apply andb_true_iff in Ha as [Hl E1].
-  apply eqb_spec in E1, E2. auto.
-Qed.
+(** A's life in a key. *)
+Definition alife (k1 : int) : int := iand k1 31.
 
 End Keys.
 
+(** A's life in [e] is at least that in [s]: [e] is [s] with [d] more. *)
+Definition up_by (e s : state) : nat := e.(sideA).(life) - s.(sideA).(life).
 
 (** ** Win tables: keys, then rank and value *)
 
@@ -226,32 +243,38 @@ Variables K1 K2 RV : array int.
 Definition rank_of (j : int) : nat := nat_of_int 16 (shr RV.[j] 6).
 Definition val_of (j : int) : nat := nat_of_int 6 RV.[j].
 
-(** The record of [(k1, k2)] with rank [r], scanning from [j]. *)
-Fixpoint scan (f : nat) (j k1 k2 : int) (r : nat) : option int :=
-  match f with
-  | O => None
-  | S f => if at_key K1 K2 j k1 k2 then if Nat.eqb (rank_of j) r then Some j else scan f (add j 1) k1 k2 r else None
-  end.
-
-(** The highest rank of [(k1, k2)] below [r], scanning from [j]. *)
-Fixpoint scan_below (f : nat) (j k1 k2 : int) (r : nat) (best : option nat) : option nat :=
+(** Among the records of the run of [(k1, k2)] from [j] with at least
+    [k1]'s A life and a rank passing [ok], the one needing the least life
+    ([best] if none). *)
+Fixpoint wbest (f : nat) (ok : int -> bool) (j k1 k2 best : int) : int :=
   match f with
   | O => best
   | S f =>
-      if at_key K1 K2 j k1 k2 then
-        scan_below f (add j 1) k1 k2 r (if Nat.ltb (rank_of j) r then Some (rank_of j) else best)
+      if in_run K1 K2 j k1 k2 then
+        let best :=
+          if leb (alife k1) (alife K1.[j]) && ok (shr RV.[j] 6) &&
+             (negb (ltb best (PArray.length K1)) || ltb (iand RV.[j] 63) (iand RV.[best] 63))
+          then j else best in
+        wbest f ok (add j 1) k1 k2 best
       else best
   end.
 
+(** A record of rank [r] for [s], at A's life or more. *)
 Definition lookup (s : state) (r : nat) : option nat :=
   let '(k1, k2) := enc s in
-  match scan 64 (start K1 K2 k1 k2) k1 k2 r with
-  | Some j => if state_eqb (dec k1 k2) s then Some (val_of j) else None
-  | None => None
-  end.
+  let ri := int_of_nat r in
+  let j := wbest 256 (fun x => eqb x ri) (start K1 K2 k1 k2) k1 k2 (PArray.length K1) in
+  if ltb j (PArray.length K1) && Nat.eqb (rank_of j) r then
+    let e := dec K1.[j] K2.[j] in
+    if state_eqb e (bump PA (up_by e s) s) then Some (val_of j) else None
+  else None.
 
+(** The rank of the record below rank [r] for [s] needing the least life. *)
 Definition below (s : state) (r : nat) : option nat :=
-  let '(k1, k2) := enc s in scan_below 64 (start K1 K2 k1 k2) k1 k2 r None.
+  let '(k1, k2) := enc s in
+  let ri := int_of_nat r in
+  let j := wbest 256 (fun x => ltb x ri) (start K1 K2 k1 k2) k1 k2 (PArray.length K1) in
+  if ltb j (PArray.length K1) then Some (rank_of j) else None.
 
 (** Record [j] checks, searched with [MemoB.check_mw] (which implies
     [WinCert.check_win] with every move of B's allowed). *)
@@ -259,24 +282,16 @@ Definition record_ok (j : int) : bool :=
   fst (MemoB.check_mw H ott tt shash lookup below (rank_of j) fuel true (entry (dec K1.[j] K2.[j]) (val_of j))
          MemoA.MLeaf).
 
-Lemma scan_spec : forall f j k1 k2 r i, scan f j k1 k2 r = Some i ->
-  ltb i (PArray.length K1) = true /\ K1.[i] = k1 /\ K2.[i] = k2 /\ rank_of i = r.
-Proof.
-  induction f as [| f IH]; intros j k1 k2 r i Hs; [discriminate |]. cbn [scan] in Hs.
-  destruct (at_key K1 K2 j k1 k2) eqn:Ha; [| discriminate].
-  destruct (Nat.eqb (rank_of j) r) eqn:Er; [| exact (IH _ _ _ _ _ Hs)].
-  injection Hs as <-. apply at_key_spec in Ha as (Hl & E1 & E2). apply Nat.eqb_eq in Er. auto.
-Qed.
-
 Lemma lookup_spec : forall s r v, lookup s r = Some v ->
-  exists j, ltb j (PArray.length K1) = true /\ s = dec K1.[j] K2.[j] /\ r = rank_of j /\ v = val_of j.
+  exists j d, ltb j (PArray.length K1) = true /\ dec K1.[j] K2.[j] = bump PA d s /\ r = rank_of j /\ v = val_of j.
 Proof.
-  intros s r v. unfold lookup. destruct (enc s) as [k1 k2].
-  destruct (scan 64 (start K1 K2 k1 k2) k1 k2 r) as [j |] eqn:Hs; [| discriminate].
-  destruct (state_eqb (dec k1 k2) s) eqn:Hq; [| discriminate].
-  intros Hv. injection Hv as <-. apply state_eqb_eq in Hq.
-  destruct (scan_spec _ _ _ _ _ _ Hs) as (Hj & E1 & E2 & Er).
-  exists j. subst. auto.
+  intros s r v. unfold lookup. destruct (enc s) as [k1 k2]. cbv zeta.
+  match goal with |- context [wbest ?f ?ok ?j ?a ?b ?c] => generalize (wbest f ok j a b c) end. intros j.
+  destruct (ltb j (PArray.length K1)) eqn:Hj; [| discriminate].
+  destruct (Nat.eqb (rank_of j) r) eqn:Er; [| discriminate]. cbn [andb].
+  destruct (state_eqb (dec K1.[j] K2.[j]) (bump PA (up_by (dec K1.[j] K2.[j]) s) s)) eqn:Hq; [| discriminate].
+  intros Hv. injection Hv as <-. apply state_eqb_eq in Hq. apply Nat.eqb_eq in Er.
+  exists j, (up_by (dec K1.[j] K2.[j]) s). auto.
 Qed.
 
 (** B wins from the opening if every record checks and the opening has a
@@ -287,7 +302,8 @@ Theorem table_wins : forall bs r v, chain record_ok bs -> hd 0%uint63 bs = 0%uin
 Proof.
   intros bs r v Hc H0 Hl Hr Hv.
   refine (certified_win_opening H ott tt lookup below hint PB r v _ Hr Hv).
-  intros s r' v' Hlk. destruct (lookup_spec s r' v' Hlk) as (j & Hj & -> & -> & ->).
+  intros s r' v' Hlk. destruct (lookup_spec s r' v' Hlk) as (j & d & Hj & E & -> & ->).
+  exists d. rewrite <- E.
   exact (MemoB.check_mw_true H ott tt shash lookup below _ _ _ (chain_all record_ok bs _ Hc H0 Hl j Hj)).
 Qed.
 
@@ -302,10 +318,28 @@ Variables K1 K2 V : array int.
 
 Definition sval_of (j : int) : nat := nat_of_int 6 V.[j].
 
+(** Among the entries of the run of [(k1, k2)] from [j] with at least
+    [k1]'s A life, the one needing the least life ([best] if none). *)
+Fixpoint sbest (f : nat) (j k1 k2 best : int) : int :=
+  match f with
+  | O => best
+  | S f =>
+      if in_run K1 K2 j k1 k2 then
+        let best :=
+          if leb (alife k1) (alife K1.[j]) && (negb (ltb best (PArray.length K1)) || ltb V.[j] V.[best])
+          then j else best in
+        sbest f (add j 1) k1 k2 best
+      else best
+  end.
+
+(** An entry for [s], at A's life or more. *)
 Definition slookup (s : state) : option nat :=
   let '(k1, k2) := enc s in
-  let j := start K1 K2 k1 k2 in
-  if at_key K1 K2 j k1 k2 then if state_eqb (dec k1 k2) s then Some (sval_of j) else None else None.
+  let j := sbest 64 (start K1 K2 k1 k2) k1 k2 (PArray.length K1) in
+  if ltb j (PArray.length K1) then
+    let e := dec K1.[j] K2.[j] in
+    if state_eqb e (bump PA (up_by e s) s) then Some (sval_of j) else None
+  else None.
 
 (** Entry [j] checks, searched with [MemoB.check_mb] (which implies
     [Checker.check_node] with every move of B's allowed). *)
@@ -313,13 +347,14 @@ Definition entry_ok (j : int) : bool :=
   fst (MemoB.check_mb H ott tt shash slookup fuel true (entry (dec K1.[j] K2.[j]) (sval_of j)) MemoA.MLeaf).
 
 Lemma slookup_spec : forall s v, slookup s = Some v ->
-  exists j, ltb j (PArray.length K1) = true /\ s = dec K1.[j] K2.[j] /\ v = sval_of j.
+  exists j d, ltb j (PArray.length K1) = true /\ dec K1.[j] K2.[j] = bump PA d s /\ v = sval_of j.
 Proof.
-  intros s v. unfold slookup. destruct (enc s) as [k1 k2].
-  destruct (at_key K1 K2 (start K1 K2 k1 k2) k1 k2) eqn:Ha; [| discriminate].
-  destruct (state_eqb (dec k1 k2) s) eqn:Hq; [| discriminate].
-  intros Hv. injection Hv as <-. apply state_eqb_eq in Hq. apply at_key_spec in Ha as (Hl & E1 & E2).
-  exists (start K1 K2 k1 k2). rewrite E1, E2. auto.
+  intros s v. unfold slookup. destruct (enc s) as [k1 k2]. cbv zeta.
+  match goal with |- context [sbest ?f ?j ?a ?b ?c] => generalize (sbest f j a b c) end. intros j.
+  destruct (ltb j (PArray.length K1)) eqn:Hj; [| discriminate].
+  destruct (state_eqb (dec K1.[j] K2.[j]) (bump PA (up_by (dec K1.[j] K2.[j]) s) s)) eqn:Hq; [| discriminate].
+  intros Hv. injection Hv as <-. apply state_eqb_eq in Hq.
+  exists j, (up_by (dec K1.[j] K2.[j]) s). auto.
 Qed.
 
 (** B does not lose from the opening of [p] if every entry checks and the
@@ -330,7 +365,8 @@ Theorem table_safe : forall p bs v, chain entry_ok bs -> hd 0%uint63 bs = 0%uint
 Proof.
   intros p bs v Hc H0 Hl Hr Hv.
   refine (certified_opening H ott tt slookup hint p v _ Hr Hv).
-  intros s v' Hlk. destruct (slookup_spec s v' Hlk) as (j & Hj & -> & ->).
+  intros s v' Hlk. destruct (slookup_spec s v' Hlk) as (j & d & Hj & E & ->).
+  exists d. rewrite <- E.
   exact (MemoB.check_mb_true H ott tt shash slookup _ _ (chain_all entry_ok bs _ Hc H0 Hl j Hj)).
 Qed.
 

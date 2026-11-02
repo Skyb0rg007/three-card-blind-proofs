@@ -1413,7 +1413,7 @@ End SaturationA.
 Theorem certified_safe_a : forall K Hb ott tt lookup hint,
   Hb < K -> 1 <= Hb ->
   (forall s c b, lookup s = Some (c, b) ->
-     exists M fuel, check_node K Hb ott tt lookup hint fuel true (entry M s) c b O = true) ->
+     exists d e M fuel, s = bump PA d e /\ check_node K Hb ott tt lookup hint fuel true (entry M e) c b O = true) ->
   forall n s t c b, RA K Hb n s t -> 1 <= t.(sideB).(life) -> is_turn_start s = true ->
   lookup (key Hb tt s) = Some (c, b) -> (blife t <= c + b * Z.of_nat n)%Z -> safe PA t.
 Proof.
@@ -1434,7 +1434,7 @@ Qed.
 Theorem certified_opening_a : forall K Hb ott tt lookup hint c b,
   Hb < K -> 1 <= Hb ->
   (forall s c b, lookup s = Some (c, b) ->
-     exists M fuel, check_node K Hb ott tt lookup hint fuel true (entry M s) c b O = true) ->
+     exists d e M fuel, s = bump PA d e /\ check_node K Hb ott tt lookup hint fuel true (entry M e) c b O = true) ->
   lookup (key Hb tt (init PA)) = Some (c, b) -> (20 <= c)%Z -> safe PA (init PA).
 Proof.
   intros K Hb ott tt lookup hint c b HbK Hb1 Hok Hk Hc.

@@ -854,7 +854,8 @@ End Saturation.
 (** ** The checker's guarantee, with no hypotheses left but the check itself *)
 
 Theorem certified_safe : forall H ott tt lookup hint,
-  (forall s v, lookup s = Some v -> exists fuel, check_node H ott tt lookup hint fuel true (entry s v) = true) ->
+  (forall s v, lookup s = Some v ->
+     exists d fuel, check_node H ott tt lookup hint fuel true (entry (bump PA d s) v) = true) ->
   forall s v t, lookup s = Some v -> R H (entry s v) t -> safe PB t.
 Proof.
   intros H ott tt lookup hint Hok.
@@ -870,7 +871,8 @@ Qed.
 (** If every certificate entry checks and the opening's entry asks for at
     most B's starting 20 life, B is safe (does not lose) from the opening. *)
 Theorem certified_opening : forall H ott tt lookup hint p v,
-  (forall s v, lookup s = Some v -> exists fuel, check_node H ott tt lookup hint fuel true (entry s v) = true) ->
+  (forall s v, lookup s = Some v ->
+     exists d fuel, check_node H ott tt lookup hint fuel true (entry (bump PA d s) v) = true) ->
   lookup (key H tt (init p)) = Some v -> v <= 20 -> safe PB (init p).
 Proof.
   intros H ott tt lookup hint p v Hok Hl Hv.

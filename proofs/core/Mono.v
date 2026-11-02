@@ -179,6 +179,90 @@ Proof.
     + apply (IH m Hin). apply step_bump. congruence.
 Qed.
 
+(** ** Certificates with dominated entries
+
+    A certificate may answer for a position with an entry where the
+    opponent [q] of the protagonist has more life (the entry is [bump q d]
+    of the position), or where the protagonist [p] has less life (the
+    position is [bump p d] of the entry). The two closures below turn a set
+    of positions that is safe "up to such bumps" into a safe set. *)
+
+Lemma bump_bump : forall p k k' s, bump p k (bump p k' s) = bump p (k' + k) s.
+Proof.
+  intros [] k k' [? ? [] [] ? ?];
+    unfold bump, bump_side, map_side, get_side, set_side, set_life; cbn; do 2 f_equal; lia.
+Qed.
+
+Lemma bump_zero : forall p s, bump p 0 s = s.
+Proof.
+  intros [] [? ? [] [] ? ?];
+    unfold bump, bump_side, map_side, get_side, set_side, set_life; cbn; rewrite Nat.add_0_r; reflexivity.
+Qed.
+
+(** What [safe_set p] asks of one position, with the successors in [T]. *)
+Definition safe_step (p : player) (T : state -> Prop) (s : state) : Prop :=
+  winner s <> Some (opp p) /\
+  (winner s = None -> to_move s = p -> exists m, In m (moves s) /\ T (step s m)) /\
+  (winner s = None -> to_move s = opp p -> forall m, In m (moves s) -> T (step s m)).
+
+(** The positions where [p] has at least the life of a position in [S]. *)
+Definition up (p : player) (S : state -> Prop) (t : state) : Prop :=
+  exists d t0, t = bump p d t0 /\ S t0.
+
+Lemma up_self : forall p (S : state -> Prop) t, S t -> up p S t.
+Proof. intros p S t H. exists 0, t. rewrite bump_zero. auto. Qed.
+
+(** [p] safe with less life is safe with more ([safe_bump]), so a set
+    whose successors are safe up to raising [p]'s life is safe once closed
+    upwards. *)
+Lemma safe_set_up : forall p S, (forall s, S s -> safe_step p (up p S) s) -> safe_set p (up p S).
+Proof.
+  intros p S HS t (d & t0 & -> & H0).
+  destruct (HS t0 H0) as (Hw & Hmine & Htheirs).
+  assert (Hst : forall m, up p S (step t0 m) -> up p S (step (bump p d t0) m)).
+  { intros m (d' & t1 & E & H1). destruct (HS t1 H1) as (Hw1 & _ & _).
+    exists (d' + d), t1. split; [| exact H1].
+    rewrite step_bump by (rewrite E, winner_bump; exact Hw1). rewrite E. apply bump_bump. }
+  split; [rewrite winner_bump; exact Hw |]. split.
+  - intros Hn Ht. rewrite winner_bump in Hn. rewrite to_move_bump in Ht.
+    destruct (Hmine Hn Ht) as (m & Hin & Hm). exists m. rewrite moves_bump. auto.
+  - intros Hn Ht m Hin. rewrite winner_bump in Hn. rewrite to_move_bump in Ht. rewrite moves_bump in Hin.
+    auto.
+Qed.
+
+(** The positions where the protagonist [opp q] has won, or where [q] has
+    at most the life of a position in [S]. *)
+Definition down (q : player) (S : state -> Prop) (t : state) : Prop :=
+  winner t = Some (opp q) \/ exists d, S (bump q d t).
+
+Lemma down_self : forall q (S : state -> Prop) t, S t -> down q S t.
+Proof. intros q S t H. right. exists 0. rewrite bump_zero. exact H. Qed.
+
+(** The opponent [q] winning with more life wins with less
+    ([wins_opp_bump]); so a set whose successors are safe up to lowering
+    [q]'s life is safe once closed downwards. *)
+Lemma safe_set_down : forall q S, (forall s, S s -> safe_step (opp q) (down q S) s) ->
+  safe_set (opp q) (down q S).
+Proof.
+  intros q S HS t [Hw | (d & H0)].
+  - rewrite Hw. rewrite opp_involutive. split; [| split; intros Hn; discriminate].
+    intros E. injection E. apply opp_neq.
+  - destruct (HS _ H0) as (Hw & Hmine & Htheirs).
+    assert (Hst : forall m, down q S (step (bump q d t) m) -> down q S (step t m)).
+    { intros m Hd. destruct (winner (step t m)) as [w |] eqn:E.
+      - destruct (player_eq_dec w (opp q)) as [-> | Hne]; [left; exact E |].
+        rewrite step_bump in Hd by (rewrite E; congruence).
+        destruct Hd as [Hd | (d' & Hd)]; [rewrite winner_bump, E in Hd; congruence |].
+        right. exists (d + d'). rewrite <- bump_bump. exact Hd.
+      - rewrite step_bump in Hd by (rewrite E; discriminate).
+        destruct Hd as [Hd | (d' & Hd)]; [rewrite winner_bump, E in Hd; discriminate |].
+        right. exists (d + d'). rewrite <- bump_bump. exact Hd. }
+    rewrite winner_bump in Hw. rewrite to_move_bump in Hmine, Htheirs. rewrite winner_bump in Hmine, Htheirs.
+    split; [exact Hw |]. split.
+    + intros Hn Ht. destruct (Hmine Hn Ht) as (m & Hin & Hm). rewrite moves_bump in Hin. eauto.
+    + intros Hn Ht m Hin. rewrite <- (moves_bump q d) in Hin. auto.
+Qed.
+
 (** * Thopter monotonicity (REDUCTION.md R3)
 
     A player with at least as many untapped and at least as many tapped

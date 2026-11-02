@@ -188,6 +188,85 @@ let chooser p lk (w : state -> float) =
 
 let check p lk hint s c b = a_check_node p.k p.hb p.ott p.tt lk hint p.fuel true (a_entry p.m s) c b 0
 
+(* Does the line (c', b') at a turn start [s] meet what [check_node] asks
+   there of the line (c, b) with lower bound [lo]? *)
+let meets p s c b lo (c', b') = c + (b * lo) <= c' + (b' * lo) && ((not (a_has_big p.k s)) || b <= b')
+
+(* [check_node]'s edge: fails, kills B for every n, or goes on to the child
+   with its line and bound. *)
+let edge p s c b lo m =
+  if a_is_create p.k s m && a_has_big p.k s then `Fail
+  else
+    let s' = a_stepA p.k p.hb p.tt s m in
+    if a_too_many p.ott s' then `Fail
+    else
+      match winner s' with
+      | Some _ -> `Fail
+      | None ->
+        let c1 = if a_is_pump_big p.k s m then c - b else c in
+        let b1 = if a_is_create p.k s m then 0 else b in
+        let c2 = c1 + (blife s' - blife s) in
+        let b2 = if a_is_hit p.k s then b1 - 1 else b1 in
+        let lo2 = if a_is_pump_big p.k s m then lo + 1 else if a_is_create p.k s m then 0 else lo in
+        if c2 + (b2 * lo2) <= 0 && b2 <= 0 then `Dead else `Go (s', c2, b2, lo2)
+
+(* The closure's choice of A's moves: at each A node the move whose turn
+   starts cost least ([leaf], infinite where A fails), B's nodes adding up
+   their moves' costs; [check_node]'s search otherwise. Returns the cost and
+   A's picks, by node (state, line, bound, root). *)
+let achoose p leaf s0 c0 b0 =
+  let memo = H.create 1024 and pick = H.create 256 in
+  let inf = infinity in
+  let rec cost root s c b lo =
+    match winner s with
+    | Some _ -> inf
+    | None ->
+      if (not root) && is_turn_start s then leaf s c b lo
+      else if a_huge_event p.hb s || a_big_event p.k s then inf
+      else
+        match H.find_opt memo (s, c, b, lo, root) with
+        | Some r -> r
+        | None ->
+          let r =
+            match to_move s with
+            | PA ->
+              let best = ref inf and bm = ref None in
+              List.iter (fun m -> if !best > 0. then let x = next s c b lo m in if x < !best then (best := x; bm := Some m))
+                (moves s);
+              Option.iter (fun m -> H.replace pick (s, c, b, lo, root) m) !bm;
+              !best
+            | PB -> List.fold_left (fun acc m -> if acc = inf then inf else acc +. next s c b lo m) 0. (moves s)
+          in
+          H.replace memo (s, c, b, lo, root) r;
+          r
+  and next s c b lo m =
+    match edge p s c b lo m with
+    | `Fail -> inf
+    | `Dead -> 0.
+    | `Go (s', c2, b2, lo2) -> cost false s' c2 b2 lo2
+  in
+  let r = cost true s0 c0 b0 0 in
+  (r, pick)
+
+(* The turn starts A's picks reach from [s0], each given to [leaf] with the
+   line and bound [check_node] asks there. *)
+let awalk p pick leaf s0 c0 b0 =
+  let seen = H.create 1024 in
+  let rec go root s c b lo =
+    match winner s with
+    | Some _ -> ()
+    | None ->
+      if (not root) && is_turn_start s then leaf s c b lo
+      else if not (a_huge_event p.hb s || a_big_event p.k s || H.mem seen (s, c, b, lo, root)) then begin
+        H.replace seen (s, c, b, lo, root) ();
+        let follow m = match edge p s c b lo m with `Go (s', c2, b2, lo2) -> go false s' c2 b2 lo2 | _ -> () in
+        match to_move s with
+        | PA -> Option.iter follow (H.find_opt pick (s, c, b, lo, root))
+        | PB -> List.iter follow (moves s)
+      end
+  in
+  go true s0 c0 b0 0
+
 (* The solver's line for a node (rsolver's [eval_go_big] for A-safe, over
    every legal move): A's nodes pick the line larger at n = [r], B's take
    the componentwise min, edges apply [ltrans]. [None] is lost for A. *)
@@ -385,6 +464,24 @@ let write_file path s =
   close_out oc;
   Sys.rename (path ^ ".tmp") path
 
+(* PackedA.alookup over the entries [find] gives (packed key -> line):
+   among the entries of [q]'s position at A's life up to [q]'s, the first,
+   by A's life, with the greatest line (c, b) in lexicographic order; it
+   answers if that entry is [q] with A's life lowered. Lines almost always
+   grow with A's life ([Shrink.amono]), so this is almost always the line
+   above all the others. *)
+let packed_choice find q =
+  let best = ref None in
+  for l = 1 to q.sideA.life do
+    let e = enc { q with sideA = { q.sideA with life = l } } in
+    match find e with
+    | Some ln -> (match !best with Some (_, _, b) when compare b ln >= 0 -> () | _ -> best := Some (l, e, ln))
+    | None -> ()
+  done;
+  match !best with
+  | Some (l, e, ln) when dec e = { q with sideA = { q.sideA with life = l } } -> Some ln
+  | _ -> None
+
 (* [certify-a]. Progress is kept in OUT.state*: the entry table, and a line
    saying how far the passes got, so TCB_RESUME=1 continues a stopped run.
    Pass 1 layer L checks the entries found by layer L - 1 (the opening is
@@ -410,12 +507,15 @@ let run dir starter outfile p =
     e
   in
   let used = Tbl.create ~keep:resume (st ^ "-used") cap in
-  (* TCB_DOM=1 (experiment): answer each lookup with the entry of the same
+  (* A turn start the chosen moves reach is covered by the entry PackedA's
+     lookup chooses among the collected entries, if its line is high
+     enough; if not, the representative of its key is collected: the same
      position at the lowest A life whose line is at least as high (A safe
-     with less life is safe with more: Mono.safe_bump). Pass 2 doesn't know
-     about it. *)
-  let dom = Sys.getenv_opt "TCB_DOM" = Some "1" in
-  let choose = Sys.getenv_opt "TCB_CHOOSE" = Some "1" in
+     with less life is safe with more: CheckerA.cert_ok), with its line.
+     A's moves are chosen to collect as few as possible ([achoose]).
+     TCB_DOM=0 collects the key itself. *)
+  let dom = Sys.getenv_opt "TCB_DOM" <> Some "0" in
+  let choose = true in
   let dom_rep s =
     match lk s with
     | None -> s
@@ -461,34 +561,51 @@ let run dir starter outfile p =
           Par.map ~dir:wdir w (fun k ->
               let a, b = Par.chunk nf w k in
               let oc = open_out (name k) in
+              (* the entries known to this worker: the table's, and its own new ones *)
               let seen = Hashtbl.create 1024 in
-              let logging s =
-                let s = if dom then dom_rep s else s in
-                match lk s with
-                | Some v ->
-                  let e = key_of s in
-                  if not (Tbl.mem used e || Hashtbl.mem seen e) then begin
-                    Hashtbl.replace seen e ();
-                    let k1, k2 = e in
-                    Printf.fprintf oc "+ %d %d %d\n" k1 k2 (venc v (l + 1))
-                  end;
-                  Some v
-                | None -> None
+              let find e = match Hashtbl.find_opt seen e with Some ln -> Some ln | None -> Option.map vline (Tbl.find used e) in
+              let add r ln =
+                let e = key_of r in
+                if not (Tbl.mem used e || Hashtbl.mem seen e) then begin
+                  Hashtbl.replace seen e ln;
+                  let k1, k2 = e in
+                  Printf.fprintf oc "+ %d %d %d\n" k1 k2 (venc ln (l + 1))
+                end
               in
-              let ok, hint, reset =
-                if choose then chooser p lk (fun k -> if Tbl.mem used (key_of (if dom then dom_rep k else k)) then 0. else 1.)
-                else oracle p lk in
               let bad = ref 0 in
               for j = a to b - 1 do
                 let s = dec fr.(j) and c, b = vline (Option.get (Tbl.find used fr.(j))) in
-                reset ();
-                let o = ok true (a_entry p.m s) c b 0 in
-                let r = check p logging hint s c b in
-                if r <> o then Printf.fprintf oc "! %d %d disagree\n" (fst fr.(j)) (snd fr.(j));
-                if not r then begin
+                (* per entry: each key's representative and its line, and the
+                   line the entries known so far give it *)
+                let reps = S.create 64 and known = S.create 64 in
+                let rep_of q = match S.find_opt reps q with
+                  | Some x -> x
+                  | None -> let r = if dom then dom_rep q else q in let x = (r, lk r) in S.replace reps q x; x in
+                let known_of q = match S.find_opt known q with
+                  | Some x -> x
+                  | None -> let x = packed_choice find q in S.replace known q x; x in
+                let leaf s' c' b' lo' =
+                  let q = a_key p.hb p.tt s' in
+                  match known_of q with
+                  | Some ln when meets p s' c' b' lo' ln -> 0.
+                  | _ -> (match rep_of q with _, Some ln when meets p s' c' b' lo' ln -> 1. | _ -> infinity)
+                in
+                let e = a_entry p.m s in
+                let r, pick = if choose then achoose p leaf e c b else (0., H.create 1) in
+                if r = infinity then begin
                   incr bad;
                   Printf.fprintf oc "- %d %d\n" (fst fr.(j)) (snd fr.(j))
                 end
+                else
+                  awalk p pick (fun s' c' b' lo' ->
+                      let q = a_key p.hb p.tt s' in
+                      match known_of q with
+                      | Some ln when meets p s' c' b' lo' ln -> ()
+                      | _ ->
+                        match rep_of q with
+                        | r, Some ln when meets p s' c' b' lo' ln -> add r ln; S.reset known
+                        | _ -> Printf.fprintf oc "! %d %d: a turn start not covered\n" (fst fr.(j)) (snd fr.(j)))
+                    e c b
               done;
               close_out oc;
               !bad)
@@ -520,10 +637,7 @@ let run dir starter outfile p =
   (* pass 2: lookup restricted to the closure, as Rocq will; A's moves from
      the oracle, or every move with TCB_HINT=all (as Rocq's hint), in
      slices of the table *)
-  let restricted s =
-    let e = enc s in
-    match Tbl.find used e with Some v when dec e = s -> Some (vline v) | _ -> None
-  in
+  let restricted s = packed_choice (fun e -> Option.map vline (Tbl.find used e)) s in
   let all = Sys.getenv_opt "TCB_HINT" = Some "all" in
   let slices = 32 in
   let bad2 = ref 0 in
@@ -715,26 +829,38 @@ let export entries starter ~outdir ~chunks p =
   let n = ref 0 in
   fold (fun _ -> incr n);
   let n = !n in
-  let k1s = Array.make n 0 and k2s = Array.make n 0 and ls = Array.make n 0 in
+  let es = Array.make n (0, 0, 0) in
   let j = ref 0 in
   fold (fun l ->
-      Scanf.sscanf l "%d %d %d %d" (fun k1 k2 c b -> k1s.(!j) <- k1; k2s.(!j) <- k2; ls.(!j) <- pack_line (c, b) 0);
+      Scanf.sscanf l "%d %d %d %d" (fun k1 k2 c b -> es.(!j) <- (k1, k2, pack_line (c, b) 0));
       incr j);
+  (* PackedA's order: the key without A's life, then A's life *)
+  Array.sort (fun (a1, a2, _) (b1, b2, _) -> Certify.packed_cmp (a1, a2) (b1, b2)) es;
+  let k1s = Array.map (fun (k1, _, _) -> k1) es and k2s = Array.map (fun (_, k2, _) -> k2) es in
+  let ls = Array.map (fun (_, _, l) -> l) es in
   for j = 1 to n - 1 do
-    if compare (k1s.(j - 1), k2s.(j - 1)) (k1s.(j), k2s.(j)) >= 0 then failwith "certify-a-export: keys not sorted"
+    if Certify.packed_cmp (k1s.(j - 1), k2s.(j - 1)) (k1s.(j), k2s.(j)) >= 0 then failwith "certify-a-export: two entries share a key"
   done;
   Printf.printf "certify-a-export %s: %d entries; K=%d Hb=%d ott=%d tt=%d M=%d fuel=%d (%.1fs)\n%!" entries n p.k
     p.hb p.ott p.tt p.m p.fuel (Unix.gettimeofday () -. t0);
-  (* PackedA.alookup *)
-  let find (k1, k2) =
-    let lo = ref 0 and hi = ref n in
-    while !lo < !hi do
-      let mid = (!lo + !hi) / 2 in
-      if compare (k1s.(mid), k2s.(mid)) (k1, k2) < 0 then lo := mid + 1 else hi := mid
-    done;
-    if !lo < n && k1s.(!lo) = k1 && k2s.(!lo) = k2 then Some !lo else None
+  (* PackedA.alookup: in the run of [s]'s position, the first entry with the
+     greatest line among those at [s]'s A life or less *)
+  let lk0 s =
+    let k1, k2 = enc s in
+    let lkey j = ls.(j) land 0xfffff in
+    let rec go f j best =
+      if f = 0 then best
+      else if Certify.in_run k1s k2s j k1 k2 then
+        if Certify.alife k1s.(j) <= Certify.alife k1 then go (f - 1) (j + 1) (if best >= n || lkey best < lkey j then j else best)
+        else best
+      else best
+    in
+    let j = go 64 (Certify.packed_start k1s k2s k1 k2) n in
+    if j < n then
+      let e = dec (k1s.(j), k2s.(j)) in
+      if Certify.bump_a (Certify.nsub s.sideA.life e.sideA.life) e = s then Some (unpack_line ls.(j)) else None
+    else None
   in
-  let lk0 s = let e = enc s in match find e with Some j when dec e = s -> Some (unpack_line ls.(j)) | _ -> None in
   let lookups = ref 0 and nodes = ref 0 and minlife = ref max_int in
   let lk s = incr lookups; lk0 s in
   (* MemoA's hash: any function is sound. [probe] also notes the least life

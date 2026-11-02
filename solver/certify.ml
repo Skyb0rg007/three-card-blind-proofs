@@ -283,11 +283,7 @@ let record_states w i =
 
 (* ** Export to Rocq (Packed.v)
 
-   The records [certify_win] collected, packed as [Packed.enc] does, with
-   ranks renumbered densely (only their order matters), sorted by key and
-   rank. Before writing, the extracted [check_win] is run on every record
-   exactly as Rocq will: lookup and below over the packed arrays, every B
-   move tried, the given fuel. *)
+   Turn starts packed as [Packed.enc] does, and [Packed.dec]. *)
 
 let put off w x = (x land ((1 lsl w) - 1)) lsl off
 let b2i b = if b then 1 else 0
@@ -438,87 +434,433 @@ let write_rocq ~outdir ~n ~defs ~arrays ~bounds ~ok ~final ~claim ~apply =
   write_data ~outdir ~n ~defs ~arrays;
   write_chunks ~outdir ~bounds ~ok ~final ~claim ~apply
 
-(* Packed.lookup and Packed.below over sorted keys [k1s], [k2s] (records
-   sorted by key, then rank); [value j] and [rank j] read record [j]. *)
-let packed_find k1s k2s k1 k2 =
-  let n = Array.length k1s in
-  let rec go a b = if a >= b then a else
+(* ** Packed.v's lookups, emulated
+
+   The arrays are sorted by key without A's life ([hi k1], then [k2]), then
+   by A's life: a position's records at every A life form a run. A lookup
+   finds the run by binary search and chooses a record of it at A's life or
+   more (B tables: B safe or winning against more A life also is against
+   less); the record is accepted if it decodes to the looked-up state with
+   A's life raised. These follow Packed.v step for step, fuel included. *)
+
+let hi k1 = k1 lsr 5
+let alife k1 = k1 land 31
+
+(* The packed order of keys. *)
+let packed_cmp (a1, a2) (b1, b2) = compare (hi a1, a2, alife a1) (hi b1, b2, alife b1)
+
+(* Packed.start *)
+let packed_start k1s k2s k1 k2 =
+  let h = hi k1 in
+  let rec go f a b =
+    if f = 0 || a >= b then a
+    else
       let m = (a + b) / 2 in
-      if k1s.(m) < k1 || (k1s.(m) = k1 && k2s.(m) < k2) then go (m + 1) b else go a m in
-  go 0 n
+      if hi k1s.(m) < h || (hi k1s.(m) = h && k2s.(m) < k2) then go (f - 1) (m + 1) b else go (f - 1) a m
+  in
+  go 32 0 (Array.length k1s)
 
-let at_key k1s k2s j k1 k2 = j < Array.length k1s && k1s.(j) = k1 && k2s.(j) = k2
+(* Packed.in_run *)
+let in_run k1s k2s j k1 k2 = j < Array.length k1s && hi k1s.(j) = hi k1 && k2s.(j) = k2
 
-let win_lookup k1s k2s rank value lookups s r =
+(* Mono.bump PA, and the model's truncated subtraction *)
+let bump_a d s = { s with sideA = { s.sideA with life = s.sideA.life + d } }
+let nsub a b = max 0 (a - b)
+
+(* Accept record [j] for [s]: it is [s] with A's life raised. *)
+let accept k1s k2s j s =
+  let e = dec (k1s.(j), k2s.(j)) in
+  e = bump_a (nsub e.sideA.life s.sideA.life) s
+
+(* Packed.wbest: the record of the run needing the least life among those
+   at [k1]'s A life or more with a rank passing [ok]. *)
+let win_best k1s k2s rv ok k1 k2 =
+  let n = Array.length k1s in
+  let rec go f j best =
+    if f = 0 then best
+    else if in_run k1s k2s j k1 k2 then
+      go (f - 1) (j + 1)
+        (if alife k1 <= alife k1s.(j) && ok (rv.(j) lsr 6) && (best >= n || rv.(j) land 63 < rv.(best) land 63)
+         then j else best)
+    else best
+  in
+  go 256 (packed_start k1s k2s k1 k2) n
+
+let rank_of rv j = (rv.(j) lsr 6) land 0xffff
+
+(* Packed.lookup and Packed.below *)
+let win_lookup k1s k2s rv lookups s r =
   incr lookups;
   let k1, k2 = enc s in
-  let rec scan j = if at_key k1s k2s j k1 k2 then (if rank j = r then Some (value j) else scan (j + 1)) else None in
-  scan (packed_find k1s k2s k1 k2)
+  let j = win_best k1s k2s rv (fun x -> x = r) k1 k2 in
+  if j < Array.length k1s && rank_of rv j = r && accept k1s k2s j s then Some (rv.(j) land 63) else None
 
-let win_below k1s k2s rank s r =
+let win_below k1s k2s rv s r =
   let k1, k2 = enc s in
-  let rec scan j best = if at_key k1s k2s j k1 k2 then scan (j + 1) (if rank j < r then Some (rank j) else best) else best in
-  scan (packed_find k1s k2s k1 k2) None
+  let j = win_best k1s k2s rv (fun x -> x < r) k1 k2 in
+  if j < Array.length k1s then Some (rank_of rv j) else None
 
-let safe_lookup k1s k2s value lookups s =
+(* Packed.slookup: the entry of the run needing the least life among those
+   at [s]'s A life or more. *)
+let safe_lookup k1s k2s vs lookups s =
   incr lookups;
   let k1, k2 = enc s in
-  let j = packed_find k1s k2s k1 k2 in
-  if at_key k1s k2s j k1 k2 then Some (value j) else None
+  let n = Array.length k1s in
+  let rec go f j best =
+    if f = 0 then best
+    else if in_run k1s k2s j k1 k2 then
+      go (f - 1) (j + 1) (if alife k1 <= alife k1s.(j) && (best >= n || vs.(j) < vs.(best)) then j else best)
+    else best
+  in
+  let j = go 64 (packed_start k1s k2s k1 k2) n in
+  if j < n && accept k1s k2s j s then Some (vs.(j) land 63) else None
 
 (* Record [j] of a win table, entry [j] of a safety table, checked as Rocq
    does (Packed.record_ok, Packed.entry_ok); the counter counts nodes and
    lookups. *)
 let record_check ~h ~ott ~tt ~fuel k1s k2s rv c j =
-  let rank j = rv.(j) lsr 6 and value j = rv.(j) land 63 in
-  fst (check_mw h ott tt (memo_hash c) (win_lookup k1s k2s rank value c) (win_below k1s k2s rank) (rank j) fuel true
-         (entry (dec (k1s.(j), k2s.(j))) (value j)) MLeaf)
+  fst (check_mw h ott tt (memo_hash c) (win_lookup k1s k2s rv c) (win_below k1s k2s rv) (rank_of rv j) fuel true
+         (entry (dec (k1s.(j), k2s.(j))) (rv.(j) land 63)) MLeaf)
 
 let entry_check ~h ~ott ~tt ~fuel k1s k2s vs c j =
-  fst (check_mb h ott tt (memo_hash c) (safe_lookup k1s k2s (fun j -> vs.(j)) c) fuel true
-         (entry (dec (k1s.(j), k2s.(j))) vs.(j)) MLeaf)
+  fst (check_mb h ott tt (memo_hash c) (safe_lookup k1s k2s vs c) fuel true
+         (entry (dec (k1s.(j), k2s.(j))) (vs.(j) land 63)) MLeaf)
 
-let export_rocq ~outdir ~chunks ~fuel w used k0 r0 =
+(* ** Choosing B's moves, and the closure of the opening
+
+   Only the entries the check of the opening consults are exported. The
+   closure starts from the opening's entry and follows one turn from each
+   entry it collects: B's move at each of its nodes is chosen to add as
+   little as possible ([choose_turn]: B's nodes take the cheapest working
+   move, A's add up their moves' costs), and every turn start the chosen
+   moves reach must be covered by a collected entry. A turn start covered
+   by one already collected (the same position at A's life or more, with
+   little enough life needed) costs nothing; otherwise it adds the
+   representative the caller gives, and costs its weight. Nothing here is
+   trusted: the export checks every collected entry again as Rocq will. *)
+
+(* B's move at each node of the turn from [e], minimising the summed cost of
+   the turn starts reached ([leaf], infinite when B fails there). With
+   [win], A must have a move (WinCert.check_win). Returns the cost and B's
+   picks. *)
+let choose_turn ~h ~ott ~win leaf e =
+  let memo = H.create 1024 and pick = H.create 256 in
+  let rec cost root s =
+    match winner s with
+    | Some PB -> 0.
+    | Some PA -> infinity
+    | None ->
+      if (not root) && is_turn_start s then leaf s
+      else if huge_event h s then infinity
+      else
+        match H.find_opt memo s with
+        | Some c -> c
+        | None ->
+          let child m = let s' = step s m in if too_many ott s' then infinity else cost false s' in
+          let c =
+            match to_move s with
+            | PA ->
+              let ms = moves s in
+              if win && ms = [] then infinity
+              else List.fold_left (fun acc m -> if acc = infinity then infinity else acc +. child m) 0. ms
+            | PB ->
+              let best = ref infinity and bm = ref None in
+              List.iter (fun m -> if !best > 0. then let c = child m in if c < !best then (best := c; bm := Some m))
+                (moves s);
+              (match !bm with Some m -> H.replace pick s m | None -> ());
+              !best
+          in
+          H.replace memo s c;
+          c
+  in
+  let c = cost true e in
+  (c, pick)
+
+(* The turn starts B's picks reach from [e], each given to [leaf]. *)
+let walk_turn ~h ~ott pick leaf e =
+  let seen = H.create 1024 in
+  let rec go root s =
+    match winner s with
+    | Some _ -> ()
+    | None ->
+      if (not root) && is_turn_start s then leaf s
+      else if (not (huge_event h s)) && not (H.mem seen s) then begin
+        H.replace seen s ();
+        let next m = let s' = step s m in if not (too_many ott s') then go false s' in
+        match to_move s with
+        | PB -> Option.iter next (H.find_opt pick s)
+        | PA -> List.iter next (moves s)
+      end
+  in
+  go true e
+
+let env_int k d = match Sys.getenv_opt k with Some v -> int_of_string v | None -> d
+
+(* The weight of adding the key [e] in round [r] of [rounds]: 1 in round 0;
+   later a key the previous round collected weighs 1 / (1 + its uses
+   there), any other 4 (Shrink's rounds). *)
+let round_weight prev e =
+  match prev with
+  | None -> 1.
+  | Some (used, uses) ->
+    if Hashtbl.mem used e then 1. /. (1. +. float (Option.value (Hashtbl.find_opt uses e) ~default:0)) else 4.
+
+(* ** Safety certificates in Rocq (Packed.v, SafeTable)
+
+   The closure as above, a turn start [s] being covered by an entry of its
+   position at A's life or more needing at most [s]'s B life. A new entry
+   is the representative of [key s]: the same position at the highest A
+   life up to which the table's value stays at most [key s]'s (Shrink's
+   DOMK=2), with its own value. TCB_ROUNDS=R repeats the closure R more
+   times, weighing keys by their use in the previous one. Then every entry
+   is checked as Rocq will (Packed.entry_ok over the sorted arrays, every B
+   move tried, the given fuel). *)
+
+let safe_rep t lk k =
+  match lk k with
+  | None -> None
+  | Some v0 ->
+    let nl = t.sv.Fix.nl in
+    let rec go k v =
+      let k' = { k with sideA = { k.sideA with life = k.sideA.life + 1 } } in
+      if k'.sideA.life > nl then (k, v) else match lk k' with Some v' when v' <= v0 -> go k' v' | _ -> (k, v)
+    in
+    Some (go k v0)
+
+let safe_closure t lk starter prev =
+  let t0 = Unix.gettimeofday () in
+  let rep = safe_rep t lk in
+  let used = Hashtbl.create 1_000_000 and runs = Hashtbl.create 1_000_000 and uses = Hashtbl.create 1_000_000 in
+  let queue = Queue.create () in
+  let add (s, v) =
+    let ((k1, k2) as e) = enc s in
+    match Hashtbl.find_opt used e with
+    | Some (s', _) -> if s' <> s then failwith "export-safe: two states share a packed key"
+    | None ->
+      Hashtbl.replace used e (s, v);
+      let r = (hi k1, k2) in
+      Hashtbl.replace runs r ((alife k1, v, e) :: Option.value (Hashtbl.find_opt runs r) ~default:[]);
+      Queue.push (s, v) queue
+  in
+  (* the collected entry covering [q] (key form) with B on [x] life *)
+  let covered q x =
+    let k1, k2 = enc q in
+    match Hashtbl.find_opt runs (hi k1, k2) with
+    | None -> None
+    | Some l -> List.find_opt (fun (a, v, _) -> a >= alife k1 && v <= x) l |> Option.map (fun (_, _, e) -> e)
+  in
+  let use e = Hashtbl.replace uses e (1 + Option.value (Hashtbl.find_opt uses e) ~default:0) in
+  let s0 = init starter in
+  (match rep (key t.h t.tt s0) with Some r -> add r | None -> failwith "export-safe: the opening has no entry");
+  let bad = ref 0 and n = ref 0 in
+  while not (Queue.is_empty queue) do
+    let s, v = Queue.pop queue in
+    let e = entry s v in
+    let leaf s' =
+      let q = key t.h t.tt s' and x = s'.sideB.life in
+      match covered q x with
+      | Some _ -> 0.
+      | None -> (match rep q with Some (k, v') when v' <= x -> round_weight prev (enc k) | _ -> infinity)
+    in
+    let c, pick = choose_turn ~h:t.h ~ott:t.ott ~win:false leaf e in
+    if c = infinity then incr bad
+    else
+      walk_turn ~h:t.h ~ott:t.ott pick (fun s' ->
+          let q = key t.h t.tt s' and x = s'.sideB.life in
+          match covered q x with
+          | Some e -> use e
+          | None ->
+            match rep q with
+            | Some ((k, v') as r) when v' <= x -> add r; use (enc k)
+            | _ -> incr bad)
+        e;
+    incr n;
+    if !n mod 100_000 = 0 then
+      Printf.printf "  closure: %d checked, %d collected (%.0fs)\n%!" !n (Hashtbl.length used) (Unix.gettimeofday () -. t0)
+  done;
+  (used, uses, !bad)
+
+let certify_safe_export dir starter ~outdir ~chunks ~fuel:f =
+  let t = open_table dir in
+  let lk = lookup t in
+  let t0 = Unix.gettimeofday () in
+  let rounds = env_int "TCB_ROUNDS" 0 in
+  let res = ref (safe_closure t lk starter None) in
+  let report r (used, _, bad) =
+    Printf.printf "closure round %d: %d entries, %d failed (%.1fs)\n%!" r (Hashtbl.length used) bad
+      (Unix.gettimeofday () -. t0)
+  in
+  report 0 !res;
+  for r = 1 to rounds do
+    let used, uses, _ = !res in
+    res := safe_closure t lk starter (Some (used, uses));
+    report r !res
+  done;
+  let used, _, bad1 = !res in
+  let n = Hashtbl.length used in
+  Hashtbl.iter (fun k (s, _) -> if dec k <> s then failwith "export-safe: dec (enc s) <> s") used;
+  let recs =
+    Hashtbl.fold (fun (k1, k2) (_, v) acc -> (k1, k2, v) :: acc) used []
+    |> List.sort (fun (a1, a2, _) (b1, b2, _) -> packed_cmp (a1, a2) (b1, b2))
+    |> Array.of_list
+  in
+  let k1s = Array.map (fun (k1, _, _) -> k1) recs and k2s = Array.map (fun (_, k2, _) -> k2) recs in
+  let vs = Array.map (fun (_, _, v) -> if v >= 64 then failwith "export-safe: value too big" else v) recs in
+  let cost, bad = costs ~dir:outdir n (entry_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s vs) in
+  let v0 = match safe_lookup k1s k2s vs (ref 0) (key t.h t.tt (init starter)) with Some v -> v | None -> 99 in
+  Printf.printf "pass 2 (as in Rocq, fuel %d): %d of %d failed, cost %d (%.1fs); opening needs %d life\n%!" f
+    (List.length bad) n (Array.fold_left ( + ) 0 cost) (Unix.gettimeofday () -. t0) v0;
+  if bad1 > 0 || bad <> [] || v0 > 20 then failwith "export-safe: not writing a failing certificate";
+  write_rocq ~outdir ~n
+    ~defs:(Printf.sprintf "Definition H := %d.\nDefinition ott := %d.\nDefinition tt := %d.\nDefinition fuel := %d.\n"
+             t.h t.ott t.tt f)
+    ~arrays:[ ("K1", fun j -> k1s.(j)); ("K2", fun j -> k2s.(j)); ("V", fun j -> vs.(j)) ]
+    ~bounds:(balance cost chunks) ~ok:"entry_ok H ott tt fuel K1 K2 V" ~final:"AFirst" ~claim:"a_first_b_safe"
+    ~apply:(Printf.sprintf "table_safe H ott tt fuel K1 K2 V %s bounds %d" (if starter = PA then "PA" else "PB") v0)
+
+(* ** Win certificates in Rocq (Packed.v, WinTable)
+
+   The closure as above with ranks: an entry is a record (a turn start,
+   its rank, the life B needs), and a turn start reached from a record of
+   rank [r] must be covered by a collected record of its position at A's
+   life or more, of rank below [r], needing at most the B life there. A new
+   record is the table's latest record below [r] of the same position at
+   the highest A life that has one needing little enough life. Only the
+   Walker orders the closure reaches are kept. Ranks are renumbered densely
+   (only their order matters). *)
+
+let certify_win_export dir starter ~outdir ~chunks ~fuel:f =
+  let w = open_win dir in
   let t = w.wt in
   let t0 = Unix.gettimeofday () in
-  let ranks = Hashtbl.fold (fun (_, r) () acc -> r :: acc) used [] |> List.sort_uniq compare |> Array.of_list in
+  let rounds = env_int "TCB_ROUNDS" 0 in
+  let nl = t.sv.Fix.nl in
+  (* the candidates for the key [q] below rank [r]: at each A life from the
+     highest down to [q]'s, the latest record below [r] *)
+  let candidates q r =
+    List.filter_map (fun l ->
+        let ql = { q with sideA = { q.sideA with life = l } } in
+        match index t ql with
+        | None -> None
+        | Some i ->
+          match below_rec w i r with
+          | Some rk -> Option.map (fun v -> (ql, rk, v)) (record w i rk)
+          | None -> None)
+      (List.init (max 0 (nl - q.sideA.life + 1)) (fun d -> nl - d))
+  in
+  let s0 = init starter in
+  let k0 = key t.h t.tt s0 in
+  let i0 = match index t k0 with Some i -> i | None -> failwith "export-win: the opening has no position" in
+  let r0 =
+    let a, b = recs w i0 in
+    let rec go p = if p >= b then failwith "export-win: no opening record on 20 life"
+      else if rval w p <= s0.sideB.life then rank w i0 p else go (p + 1) in
+    go a
+  in
+  let v0 = Option.get (record w i0 r0) in
+  let closure prev =
+    let used = Hashtbl.create 1_000_000 and runs = Hashtbl.create 1_000_000 and uses = Hashtbl.create 1_000_000 in
+    let queue = Queue.create () in
+    let add (s, r, v) =
+      let ((k1, k2) as e) = enc s in
+      if not (Hashtbl.mem used (e, r)) then begin
+        Hashtbl.replace used (e, r) (s, v);
+        let key = (hi k1, k2) in
+        Hashtbl.replace runs key ((alife k1, r, v, e) :: Option.value (Hashtbl.find_opt runs key) ~default:[]);
+        Queue.push (s, r, v) queue
+      end
+    in
+    let covered q r x =
+      let k1, k2 = enc q in
+      match Hashtbl.find_opt runs (hi k1, k2) with
+      | None -> None
+      | Some l ->
+        List.find_opt (fun (a, r', v, _) -> a >= alife k1 && r' < r && v <= x) l
+        |> Option.map (fun (_, r', _, e) -> (e, r'))
+    in
+    let use e = Hashtbl.replace uses e (1 + Option.value (Hashtbl.find_opt uses e) ~default:0) in
+    add (k0, r0, v0);
+    let bad = ref 0 and n = ref 0 in
+    while not (Queue.is_empty queue) do
+      let s, r, v = Queue.pop queue in
+      let e = entry s v in
+      (* the record to add for the key [q] with B on [x] life *)
+      let memo = H.create 64 in
+      let rep q _ x =
+        let cs = match H.find_opt memo q with Some cs -> cs | None -> let cs = candidates q r in H.replace memo q cs; cs in
+        List.find_opt (fun (_, _, v) -> v <= x) cs
+      in
+      let leaf s' =
+        let q = key t.h t.tt s' and x = s'.sideB.life in
+        match covered q r x with
+        | Some _ -> 0.
+        | None -> (match rep q r x with Some (ql, rk, _) -> round_weight prev (enc ql, rk) | None -> infinity)
+      in
+      let c, pick = choose_turn ~h:t.h ~ott:t.ott ~win:true leaf e in
+      if c = infinity then incr bad
+      else
+        walk_turn ~h:t.h ~ott:t.ott pick (fun s' ->
+            let q = key t.h t.tt s' and x = s'.sideB.life in
+            match covered q r x with
+            | Some er -> use er
+            | None ->
+              match rep q r x with
+              | Some ((ql, rk, _) as rc) -> add rc; use (enc ql, rk)
+              | None -> incr bad)
+          e;
+      incr n;
+      if !n mod 100_000 = 0 then
+        Printf.printf "  closure: %d checked, %d collected (%.0fs)\n%!" !n (Hashtbl.length used)
+          (Unix.gettimeofday () -. t0)
+    done;
+    (used, uses, !bad)
+  in
+  let res = ref (closure None) in
+  let report r (used, _, bad) =
+    Printf.printf "closure round %d: %d records, %d failed (%.1fs)\n%!" r (Hashtbl.length used) bad
+      (Unix.gettimeofday () -. t0)
+  in
+  report 0 !res;
+  for r = 1 to rounds do
+    let used, uses, _ = !res in
+    res := closure (Some (used, uses));
+    report r !res
+  done;
+  let used, _, bad1 = !res in
+  Hashtbl.iter (fun (k, _) (s, _) -> if dec k <> s then failwith "export-win: dec (enc s) <> s") used;
+  let ranks = Hashtbl.fold (fun (_, r) _ acc -> r :: acc) used [] |> List.sort_uniq compare |> Array.of_list in
+  if Array.length ranks >= 1 lsl 16 then failwith "export-win: too many ranks";
   let dense r =
     let rec go a b = if a >= b then a else let m = (a + b) / 2 in if ranks.(m) < r then go (m + 1) b else go a m in
-    go 0 (Array.length ranks) in
-  if Array.length ranks >= 1 lsl 16 then failwith "export: too many ranks";
+    go 0 (Array.length ranks)
+  in
   let recs =
-    Hashtbl.fold (fun (i, r) () acc ->
-        match record w i r with
-        | None -> acc
-        | Some v ->
-          if v >= 64 then failwith "export: value too big";
-          List.fold_left (fun acc s -> let k1, k2 = enc s in (k1, k2, dense r, v) :: acc) acc (record_states w i))
-      used []
-    |> List.sort_uniq compare |> Array.of_list in
+    Hashtbl.fold (fun ((k1, k2), r) (_, v) acc ->
+        if v >= 64 then failwith "export-win: value too big";
+        (k1, k2, dense r, v) :: acc) used []
+    |> List.sort (fun (a1, a2, ra, _) (b1, b2, rb, _) -> compare (packed_cmp (a1, a2) (b1, b2), ra) (0, rb))
+    |> Array.of_list
+  in
   let n = Array.length recs in
   Printf.printf "export: %d records, %d ranks\n%!" n (Array.length ranks);
   let k1s = Array.map (fun (k1, _, _, _) -> k1) recs and k2s = Array.map (fun (_, k2, _, _) -> k2) recs in
   let rv = Array.map (fun (_, _, r, v) -> (r lsl 6) lor v) recs in
-  let lookup = win_lookup k1s k2s (fun j -> rv.(j) lsr 6) (fun j -> rv.(j) land 63) (ref 0) in
-  (* each record is checked as the state its key stands for, as in Rocq *)
-  Hashtbl.iter (fun (i, _) () -> List.iter (fun s -> if dec (enc s) <> s then failwith "export: dec (enc s) <> s")
-                   (record_states w i)) used;
-  let cost, bad = costs ~dir:outdir n (record_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel k1s k2s rv) in
+  let cost, bad = costs ~dir:outdir n (record_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s rv) in
   let rk0 = dense r0 in
-  let v0 = lookup k0 rk0 in
-  Printf.printf "export: %d of %d records fail with fuel %d, cost %d; opening: rank %d, value %s (%.1fs)\n%!"
-    (List.length bad) n fuel (Array.fold_left ( + ) 0 cost) rk0
-    (match v0 with Some v -> string_of_int v | None -> "none") (Unix.gettimeofday () -. t0);
-  if bad <> [] || v0 = None then failwith "export: not writing a failing certificate";
+  let lv0 = win_lookup k1s k2s rv (ref 0) k0 rk0 in
+  Printf.printf "pass 2 (as in Rocq, fuel %d): %d of %d records fail, cost %d; opening: rank %d, value %s (%.1fs)\n%!"
+    f (List.length bad) n (Array.fold_left ( + ) 0 cost) rk0
+    (match lv0 with Some v -> string_of_int v | None -> "none") (Unix.gettimeofday () -. t0);
+  (match lv0 with Some v when bad1 = 0 && bad = [] && v <= 20 -> () | _ ->
+     failwith "export-win: not writing a failing certificate");
   write_rocq ~outdir ~n
     ~defs:(Printf.sprintf "Definition H := %d.\nDefinition ott := %d.\nDefinition tt := %d.\nDefinition fuel := %d.\n"
-             t.h t.ott t.tt fuel)
-    ~arrays:[ ("K1", fun j -> let (k1, _, _, _) = recs.(j) in k1); ("K2", fun j -> let (_, k2, _, _) = recs.(j) in k2);
-              ("RV", fun j -> let (_, _, r, v) = recs.(j) in (r lsl 6) lor v) ]
+             t.h t.ott t.tt f)
+    ~arrays:[ ("K1", fun j -> k1s.(j)); ("K2", fun j -> k2s.(j)); ("RV", fun j -> rv.(j)) ]
     ~bounds:(balance cost chunks) ~ok:"record_ok H ott tt fuel K1 K2 RV" ~final:"BFirst"
-    ~claim:"b_first_b_wins" ~apply:(Printf.sprintf "table_wins H ott tt fuel K1 K2 RV bounds %d %d" rk0 (Option.get v0))
+    ~claim:"b_first_b_wins" ~apply:(Printf.sprintf "table_wins H ott tt fuel K1 K2 RV bounds %d %d" rk0 (Option.get lv0))
 
-let certify_win ?export dir starter =
+let certify_win dir starter =
   let w = open_win dir in
   let t = w.wt in
   let t0 = Unix.gettimeofday () in
@@ -577,10 +919,7 @@ let certify_win ?export dir starter =
      Printf.printf "opening record: rank %d, B needs %d life (has %d)\n%!" r0 v s0.sideB.life;
      if bad = 0 && v <= 20 then print_endline "certified: B wins from the opening"
      else print_endline "not certified"
-   | None -> print_endline "not certified: the opening record is missing");
-  match export with
-  | Some f -> f w used k0 r0
-  | None -> ()
+   | None -> print_endline "not certified: the opening record is missing")
 
 (* How long a ranked B win can last: the opening's record on B's starting
    life, and for each A-life level the highest round any record reaches. A
@@ -851,57 +1190,6 @@ let win_cost dir starter n =
   Printf.printf "%d states: memoised %.1f ms/state (%.0f memo entries/state); unmemoised %.1f ms/state (%.0f nodes/state)\n"
     !cnt (1000. *. !tm /. float !cnt) (float !mn /. float !cnt) (1000. *. !tn /. float !cnt) (float !nn /. float !cnt)
 
-(* ** Safety certificates in Rocq (Packed.v, SafeTable)
-
-   Only the entries the check actually consults from the opening are kept:
-   pass 1 runs [check_node] from the opening entry with a logging lookup
-   and the memoised oracle, collecting the closure; pass 2 re-checks every
-   collected entry exactly as Rocq will (lookup restricted to the closure,
-   every B move tried, the given fuel). *)
-let certify_safe_export dir starter ~outdir ~chunks ~fuel:f =
-  let t = open_table dir in
-  let lk = lookup t in
-  let t0 = Unix.gettimeofday () in
-  let s0 = init starter in
-  let k0 = key t.h t.tt s0 in
-  let v0 = match lk k0 with Some v -> v | None -> failwith "export-safe: the opening has no entry" in
-  let used = Hashtbl.create 1_000_000 and queue = Queue.create () in
-  let add s v =
-    let k = enc s in
-    match Hashtbl.find_opt used k with
-    | Some (s', _) -> if s' <> s then failwith "export-safe: two states share a packed key"
-    | None -> Hashtbl.replace used k (s, v); Queue.push (s, v) queue
-  in
-  add k0 v0;
-  let logging s = match lk s with Some v -> add s v; Some v | None -> None in
-  let bad1 = ref 0 and done1 = ref 0 in
-  while not (Queue.is_empty queue) do
-    let s, v = Queue.pop queue in
-    let memo, _, hint = oracle t lk in
-    if not (check_node t.h t.ott t.tt logging hint fuel true (entry s v)) then incr bad1;
-    H.reset memo;
-    incr done1;
-    if !done1 mod 100_000 = 0 then
-      Printf.printf "  pass 1: %d checked, %d collected (%.0fs)\n%!" !done1 (Hashtbl.length used) (Unix.gettimeofday () -. t0)
-  done;
-  let n = Hashtbl.length used in
-  Printf.printf "pass 1: %d entries collected, %d failed (%.1fs)\n%!" n !bad1 (Unix.gettimeofday () -. t0);
-  Hashtbl.iter (fun k (s, _) -> if dec k <> s then failwith "export-safe: dec (enc s) <> s") used;
-  let recs = Hashtbl.fold (fun (k1, k2) (_, v) acc -> (k1, k2, v) :: acc) used [] |> List.sort compare |> Array.of_list in
-  let k1s = Array.map (fun (k1, _, _) -> k1) recs and k2s = Array.map (fun (_, k2, _) -> k2) recs in
-  let vs = Array.map (fun (_, _, v) -> v) recs in
-  let cost, bad = costs ~dir:outdir n (entry_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s vs) in
-  Printf.printf "pass 2 (as in Rocq, fuel %d): %d failed, cost %d (%.1fs); opening needs %d life\n%!" f
-    (List.length bad) (Array.fold_left ( + ) 0 cost) (Unix.gettimeofday () -. t0) v0;
-  if !bad1 > 0 || bad <> [] || v0 > 20 then failwith "export-safe: not writing a failing certificate";
-  write_rocq ~outdir ~n
-    ~defs:(Printf.sprintf "Definition H := %d.\nDefinition ott := %d.\nDefinition tt := %d.\nDefinition fuel := %d.\n"
-             t.h t.ott t.tt f)
-    ~arrays:[ ("K1", fun j -> let (k1, _, _) = recs.(j) in k1); ("K2", fun j -> let (_, k2, _) = recs.(j) in k2);
-              ("V", fun j -> let (_, _, v) = recs.(j) in v) ]
-    ~bounds:(balance cost chunks) ~ok:"entry_ok H ott tt fuel K1 K2 V" ~final:"AFirst" ~claim:"a_first_b_safe"
-    ~apply:(Printf.sprintf "table_safe H ott tt fuel K1 K2 V %s bounds %d" (if starter = PA then "PA" else "PB") v0)
-
 (* ** Re-cutting an exported table into chunks
 
    Reads an exported directory's Data.v.xz (afirst or bfirst), checks every
@@ -954,21 +1242,22 @@ let rechunk dir chunks =
   if win then begin
     let rv = arr "RV" in
     let cost, bad = costs ~dir n (record_check ~h ~ott ~tt ~fuel k1s k2s rv) in
-    let rank j = rv.(j) lsr 6 and value j = rv.(j) land 63 in
     (* the opening's lowest-rank record on at most 20 life *)
     let s0 = init PB in
-    let k1, k2 = enc (key h tt s0) in
-    let rec first j = if at_key k1s k2s j k1 k2 then (if value j <= s0.sideB.life then Some j else first (j + 1)) else None in
-    let j0 = match first (packed_find k1s k2s k1 k2) with Some j -> j | None -> failwith "rechunk: no opening record" in
+    let k0 = key h tt s0 in
+    let e0 = enc k0 in
+    let r0 = ref max_int in
+    Array.iteri (fun j k1 -> if (k1, k2s.(j)) = e0 && rv.(j) land 63 <= s0.sideB.life then r0 := min !r0 (rank_of rv j)) k1s;
+    let v0 = match win_lookup k1s k2s rv dummy k0 !r0 with Some v -> v | None -> failwith "rechunk: no opening record" in
     Printf.printf "%d of %d records fail, cost %d; opening: rank %d, value %d (%.1fs)\n%!" (List.length bad) n
-      (Array.fold_left ( + ) 0 cost) (rank j0) (value j0) (Unix.gettimeofday () -. t0);
-    if bad <> [] then failwith "rechunk: not writing a failing certificate";
+      (Array.fold_left ( + ) 0 cost) !r0 v0 (Unix.gettimeofday () -. t0);
+    if bad <> [] || v0 > 20 then failwith "rechunk: not writing a failing certificate";
     write_chunks ~outdir:dir ~bounds:(balance cost chunks) ~ok:"record_ok H ott tt fuel K1 K2 RV" ~final:"BFirst"
-      ~claim:"b_first_b_wins" ~apply:(Printf.sprintf "table_wins H ott tt fuel K1 K2 RV bounds %d %d" (rank j0) (value j0))
+      ~claim:"b_first_b_wins" ~apply:(Printf.sprintf "table_wins H ott tt fuel K1 K2 RV bounds %d %d" !r0 v0)
   end else begin
     let vs = arr "V" in
     let cost, bad = costs ~dir n (entry_check ~h ~ott ~tt ~fuel k1s k2s vs) in
-    let v0 = match safe_lookup k1s k2s (fun j -> vs.(j)) dummy (key h tt (init PA)) with
+    let v0 = match safe_lookup k1s k2s vs dummy (key h tt (init PA)) with
       | Some v -> v | None -> failwith "rechunk: no opening entry" in
     Printf.printf "%d of %d entries fail, cost %d; opening needs %d life (%.1fs)\n%!" (List.length bad) n
       (Array.fold_left ( + ) 0 cost) v0 (Unix.gettimeofday () -. t0);

@@ -419,8 +419,7 @@ let () =
   | [| _; "certify-safe-export"; dir; starter; outdir; chunks; fuel |] ->
     Certify.certify_safe_export dir (pl starter) ~outdir ~chunks:(int_of_string chunks) ~fuel:(int_of_string fuel)
   | [| _; "certify-win-export"; dir; starter; outdir; chunks; fuel |] ->
-    Certify.certify_win dir (pl starter)
-      ~export:(Certify.export_rocq ~outdir ~chunks:(int_of_string chunks) ~fuel:(int_of_string fuel))
+    Certify.certify_win_export dir (pl starter) ~outdir ~chunks:(int_of_string chunks) ~fuel:(int_of_string fuel)
   | [| _; "win-depth"; dir; starter |] -> Certify.win_depth dir (pl starter)
   (* fixval TABLE ACTIVE ALIFE AWALKERS ATHOP AHAND BWALKERS BTHOP BHAND ELIXIR:
      the life B needs at that turn start in a saved B table (as for pwin) *)
@@ -454,6 +453,7 @@ let () =
   | [| _; "shrink-safe"; dir; starter; rounds |] -> Shrink.run dir (pl starter) (int_of_string rounds)
   | [| _; "dom-safe"; dir; starter; sym; dom |] -> Shrink.dom_safe dir (pl starter) (sym = "1") (int_of_string dom)
   | [| _; "rechunk"; dir; chunks |] -> Certify.rechunk dir (int_of_string chunks)
+  | [| _; "amono"; dir |] -> Shrink.amono dir
   | [| _; "certify-a-debug"; dir; hex; c; b |] ->
     Certifya.debug dir hex (int_of_string c) (int_of_string b) (a_params ())
   | [| _; "certify-a-levels"; dir; k1; k2 |] -> Certifya.levels dir (int_of_string k1) (int_of_string k2)

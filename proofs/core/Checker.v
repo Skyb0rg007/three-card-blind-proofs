@@ -19,6 +19,11 @@
       exact size of such a Walker would matter is a loss for B
       ([huge_event]), and so is A having more than [ott] Thopters
       ([too_many]).
+    - **A's life** may be lower than the entry's: the certificate may
+      answer for a position with the entry of the same position where A
+      has more life ([cert_ok]). B safe against more A life is safe against
+      less, so the safe set is closed downwards in A's life
+      ([Mono.safe_set_down]).
 
     [R s t] says that the certificate-side state [s] abstracts the real
     state [t]. The soundness theorem [cert_safe] needs three facts about [R]
@@ -30,6 +35,7 @@
 From Stdlib Require Import List Bool Arith Lia.
 Import ListNotations.
 From TCB.Spec Require Import Model Game.
+From TCB.Proofs Require Import Mono.
 
 (** Turn starts: an upkeep window where the active player has priority and
     nobody has passed. (The solvers also stop where the other player has
@@ -239,11 +245,28 @@ Proof.
   apply clamp_bf_rel.
 Qed.
 
+(** Raising A's life on both sides keeps [R]: A's lives are equal under it. *)
+Lemma R_bump : forall d s t, R s t -> R (bump PA d s) (bump PA d t).
+Proof.
+  intros d [act ft [la ca pa hwa hea bfa ea tua tta liba gya] b c pd]
+    [act' ft' [la' ca' pa' hwa' hea' bfa' ea' tua' tta' liba' gya'] b' c' pd'].
+  unfold R, sideA_rel, bump, bump_side, map_side, get_side, set_side, set_life; cbn.
+  intros (E1 & E2 & E3 & E4 & N & (a1 & a2 & a3 & a4 & a5 & a6 & a7 & a8 & a9 & a10 & a11 & a12 & a13) & HB).
+  refine (conj E1 (conj E2 (conj E3 (conj E4 (conj N (conj _ HB)))))).
+  repeat split; auto; lia.
+Qed.
+
+Lemma entry_bump : forall d s v, entry (bump PA d s) v = bump PA d (entry s v).
+Proof. intros d [? ? [] [] ? ?] v. reflexivity. Qed.
+
 (** ** Soundness *)
 
-
-(** Every entry checks. *)
-Hypothesis cert_ok : forall s v, lookup s = Some v -> exists fuel, check_node fuel true (entry s v) = true.
+(** Every entry checks, possibly as a position where A has more life
+    ([d]): the table may answer for a position with the entry of a
+    position that dominates it (B safe against more A life is safe against
+    less, as in [Mono.wins_opp_bump]). *)
+Hypothesis cert_ok : forall s v, lookup s = Some v ->
+  exists d fuel, check_node fuel true (entry (bump PA d s) v) = true.
 
 (** The simulation facts (discharged in a separate file). *)
 Hypothesis sim_mine : forall s t m,
@@ -280,23 +303,25 @@ Qed.
 Definition good (t : state) : Prop :=
   exists s f, R s t /\ check_node f true s = true.
 
+(** The safe set is [down PA good]: [good] up to lowering A's life. *)
 Lemma good_next : forall s t m f,
   R s t -> In m (moves s) -> huge_event s = false ->
-  check_node f false (step s m) = true -> good (step t m).
+  check_node f false (step s m) = true -> down PA good (step t m).
 Proof.
   intros s t m f HR Hin Hh Hc.
   assert (HR' : R (step s m) (step t m)).
   { apply sim_step; auto. eapply check_winner. exact Hc. }
   destruct (check_below f (step s m) Hc) as [(_ & _ & v & Hl & Hv) | Hr].
-  - destruct (cert_ok _ _ Hl) as [fuel Hf]. exists (entry (key (step s m)) v), fuel. split.
-    + eapply R_trans; [| exact HR']. eapply R_key; eassumption.
-    + exact Hf.
-  - exists (step s m), f. auto.
+  - destruct (cert_ok _ _ Hl) as (d & fuel & Hf). right. exists d.
+    exists (entry (bump PA d (key (step s m))) v), fuel. split; [| exact Hf].
+    rewrite entry_bump. apply R_bump.
+    eapply R_trans; [| exact HR']. eapply R_key; eassumption.
+  - apply down_self. exists (step s m), f. auto.
 Qed.
 
-Theorem good_safe : safe_set PB good.
+Lemma good_step : forall t, good t -> safe_step PB (down PA good) t.
 Proof.
-  intros t (s & [| f] & HR & Hc); [discriminate |].
+  intros t (s & [| f] & HR & Hc); [discriminate |]. unfold safe_step.
   pose proof (R_winner _ _ HR) as Ew. pose proof (R_to_move _ _ HR) as Em.
   cbn [check_node negb andb] in Hc.
   split; [rewrite Ew; cbn [opp]; destruct (winner s) as [[] |]; cbv beta iota in Hc; congruence |].
@@ -317,11 +342,16 @@ Proof.
       eapply good_next; eauto.
 Qed.
 
+Theorem good_safe : safe_set PB (down PA good).
+Proof. exact (safe_set_down PA good good_step). Qed.
+
 (** B is safe from every real state an entry abstracts. *)
 Theorem cert_safe : forall s v t, lookup s = Some v -> R (entry s v) t -> safe PB t.
 Proof.
-  intros s v t Hl HR. exists good. split; [exact good_safe |].
-  destruct (cert_ok _ _ Hl) as [fuel Hf]. exists (entry s v), fuel. split; [exact HR | exact Hf].
+  intros s v t Hl HR. exists (down PA good). split; [exact good_safe |].
+  destruct (cert_ok _ _ Hl) as (d & fuel & Hf). right. exists d.
+  exists (entry (bump PA d s) v), fuel. split; [| exact Hf].
+  rewrite entry_bump. apply R_bump. exact HR.
 Qed.
 
 End Checker.

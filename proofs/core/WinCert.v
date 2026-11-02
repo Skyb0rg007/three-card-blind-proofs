@@ -15,7 +15,7 @@
 From Stdlib Require Import List Bool Arith Lia.
 Import ListNotations.
 From TCB.Spec Require Import Model Game.
-From TCB.Proofs Require Import Checker Saturation.
+From TCB.Proofs Require Import Mono Checker Saturation.
 
 (** A's move lists agree under [R], so A has a move in the real state
     whenever it has one in the certificate's. *)
@@ -62,7 +62,10 @@ Fixpoint check_win (r fuel : nat) (root : bool) (s : state) : bool :=
       end
   end.
 
-Hypothesis cert_ok : forall s r v, lookup s r = Some v -> exists fuel, check_win r fuel true (entry s v) = true.
+(** Every entry checks, possibly as a position where A has more life
+    ([d]), as in [Checker.cert_ok]. *)
+Hypothesis cert_ok : forall s r v, lookup s r = Some v ->
+  exists d fuel, check_win r fuel true (entry (bump PA d s) v) = true.
 
 Lemma check_win_winner : forall r f root s, check_win r f root s = true -> winner s <> Some PA.
 Proof.
@@ -119,8 +122,10 @@ End Rank.
 Theorem cert_wins : forall r s v t, lookup s r = Some v -> R H (entry s v) t -> wins PB t.
 Proof.
   induction r as [r IH] using lt_wf_ind.
-  intros s v t Hl HR. destruct (cert_ok _ _ _ Hl) as [fuel Hf].
-  exact (check_win_wins r IH fuel true (entry s v) t Hf HR).
+  intros s v t Hl HR. destruct (cert_ok _ _ _ Hl) as (d & fuel & Hf).
+  apply (wins_opp_bump PA d t).
+  apply (check_win_wins r IH fuel true (entry (bump PA d s) v) (bump PA d t) Hf).
+  rewrite entry_bump. apply R_bump. exact HR.
 Qed.
 
 End WinCert.
@@ -128,7 +133,8 @@ End WinCert.
 (** If every entry checks and some entry for the opening's key asks for at
     most B's starting 20 life, B wins from the opening. *)
 Theorem certified_win_opening : forall H ott tt lookup below hint p r v,
-  (forall s r v, lookup s r = Some v -> exists fuel, check_win H ott tt lookup below hint r fuel true (entry s v) = true) ->
+  (forall s r v, lookup s r = Some v ->
+     exists d fuel, check_win H ott tt lookup below hint r fuel true (entry (bump PA d s) v) = true) ->
   lookup (key H tt (init p)) r = Some v -> v <= 20 -> wins PB (init p).
 Proof.
   intros H ott tt lookup below hint p r v Hok Hl Hv.

@@ -1214,3 +1214,30 @@ Done: `a_first_a_safe` and `a_first_draw` are proved in `Results.v`.
   single move skips the memo, which costs more there than it saves. On
   samples this makes them 1.2–1.3 times faster; together they take about
   1.75 CPU-hours (it was about 2.5).
+- **Smaller tables: dominance and move choice.** A table need not hold
+  every position the check of the opening reaches. A lookup may answer
+  with the entry of the same position at another A life, the one that
+  dominates: for B's tables (afirst, bfirst) a higher A life (B safe or
+  winning against more A life also is against less), for the A-safe table
+  a lower one (A safe with less life is safe with more). The checkers'
+  hypotheses allow it: `Checker.cert_ok` and `WinCert.cert_ok` give the
+  check at `bump PA d s`, `CheckerA.cert_ok` at an entry `e` with
+  `s = bump PA d e`, and `Mono.safe_set_down` / `Mono.safe_set_up` close
+  the safe sets under these bumps (`Mono.wins_opp_bump` for wins). The
+  packed tables are sorted by the key without A's life, then by A's life,
+  so a position's entries at every A life are next to each other; a
+  lookup finds them by binary search and takes, among those at A's life
+  or more (B tables), the one needing the least life (for wins, of the
+  rank asked, or the least below it), and among those at A's life or less
+  (A table), the first with the greatest line `(c, b)` in lexicographic
+  order. Lines almost always grow with A's life (of 23.8M steps from one A
+  life to the next in the A-safe table, 19,094 decrease), so this is
+  almost always the line above all the others. Nothing about the choice
+  needs trust: the entry returned is checked (`state_eqb`) to be the
+  looked-up state with A's life changed. The exporters then collect the
+  closure of the opening differently: at each of the protagonist's nodes
+  they choose the working move whose turn starts add the fewest new
+  entries (one already covered by a collected entry costs nothing), and a
+  turn start that isn't covered adds its representative, the same
+  position at the most dominant A life with a value at least as good.
+  Rocq still tries every move, so the choice needs no trust either.

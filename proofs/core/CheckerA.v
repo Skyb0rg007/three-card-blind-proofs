@@ -21,6 +21,10 @@
       where such a Walker's exact size matters is a loss for A
       ([huge_event]), and so is B having more than [ott] Thopters
       ([too_many]).
+    - **A's life** may be higher than the entry's: the certificate may
+      answer for a position with the entry of the same position where A
+      has less life ([cert_ok]). A safe with less life is safe with more,
+      so the safe set is closed upwards in A's life ([Mono.safe_set_up]).
 
     [RA n s t] says that the certificate state [s] abstracts the real state
     [t] whose BIG Walker has [K + n] counters. The soundness theorem
@@ -30,7 +34,7 @@
 From Stdlib Require Import List Bool Arith ZArith Lia.
 Import ListNotations.
 From TCB.Spec Require Import Model Game.
-From TCB.Proofs Require Import Checker.
+From TCB.Proofs Require Import Mono Checker.
 
 Open Scope Z_scope.
 
@@ -288,9 +292,31 @@ Qed.
 
 (** ** Soundness *)
 
-(** Every entry checks, with some life for B and some fuel. *)
+(** The certificate may answer for a position with the entry [e] of a
+    position where A has less life (A safe with less life is safe with
+    more, [Mono.safe_bump]): [RA] keeps A's lives equal, so the real state
+    is then a [bump] of one the entry abstracts. *)
+Lemma entry_bump : forall d m e, entry m (bump PA d e) = bump PA d (entry m e).
+Proof. intros d m [? ? [] [] ? ?]. reflexivity. Qed.
+
+Lemma RA_unbump : forall n d x t, RA n (bump PA d x) t -> exists t0, t = bump PA d t0 /\ RA n x t0.
+Proof.
+  intros n d [act ft [la ca pa hwa hea bfa ea tua tta liba gya] b c pd]
+    [act' ft' [la' ca' pa' hwa' hea' bfa' ea' tua' tta' liba' gya'] b' c' pd'].
+  unfold RA, sideA_rel, bump, bump_side, map_side, get_side, set_side, set_life; cbn.
+  intros (E1 & E2 & E3 & E4 & N & (a1 & a2 & a3 & a4 & a5 & a6 & a7 & a8 & a9 & a10 & a11 & a12 & a13 & a14 & a15)
+          & HB & Hd).
+  exists (mkState act' ft' (mkSide (la' - d) ca' pa' hwa' hea' bfa' ea' tua' tta' liba' gya') b' c' pd').
+  split.
+  - cbn. do 2 f_equal. lia.
+  - cbn. refine (conj E1 (conj E2 (conj E3 (conj E4 (conj N (conj _ (conj HB Hd))))))).
+    repeat split; auto; lia.
+Qed.
+
+(** Every entry checks, with some life for B and some fuel, as the entry
+    [e] of a position [s] where A has [d] more life. *)
 Hypothesis cert_ok : forall s c b, lookup s = Some (c, b) ->
-  exists m fuel, check_node fuel true (entry m s) c b O = true.
+  exists d e m fuel, s = bump PA d e /\ check_node fuel true (entry m e) c b O = true.
 
 (** The simulation facts (discharged in a separate file). *)
 Hypothesis sim_mine : forall n s t m,
@@ -341,12 +367,15 @@ Definition good (t : state) : Prop :=
 
 Lemma good_entry : forall n s t c b, RA n s t -> (1 <= t.(sideB).(life))%nat ->
   is_turn_start s = true ->
-  lookup (key s) = Some (c, b) -> blife t <= c + b * Z.of_nat n -> good t.
+  lookup (key s) = Some (c, b) -> blife t <= c + b * Z.of_nat n -> up PA good t.
 Proof.
-  intros n s t c b HR Hl _ Hk Hv. right.
-  destruct (cert_ok _ _ _ Hk) as (m & fuel & Hc).
-  exists n, (entry m (key s)), c, b, O, fuel.
-  split; [apply RA_key; exact HR |]. split; [lia |]. split; [exact Hl |]. split; [exact Hv | exact Hc].
+  intros n s t c b HR Hl _ Hk Hv.
+  destruct (cert_ok _ _ _ Hk) as (d & e & m & fuel & Ee & Hc).
+  pose proof (RA_key n m s t HR) as HR'. rewrite Ee, entry_bump in HR'.
+  destruct (RA_unbump n d (entry m e) t HR') as (t0 & -> & HR0).
+  exists d, t0. split; [reflexivity |]. right.
+  exists n, (entry m e), c, b, O, fuel.
+  split; [exact HR0 |]. split; [lia |]. split; [exact Hl |]. split; [exact Hv | exact Hc].
 Qed.
 
 (** The edge's arithmetic: the child's line bounds the child's life. *)
@@ -388,14 +417,14 @@ Lemma good_next : forall n s t m f c b lo,
        if (c2 + b2 * Z.of_nat lo2 <=? 0) && (b2 <=? 0) then true
        else check_node f false s' c2 b2 lo2
    end) = true ->
-  good (step t m).
+  up PA good (step t m).
 Proof.
   intros n s t m f c b lo HR Hlo Hl Hv Hin Hh Hbe Hc.
   destruct (is_create s m && has_big s)%bool eqn:Ecb; [discriminate |].
   cbv zeta in Hc. destruct (too_many (stepA s m)); [discriminate |].
   destruct (winner (stepA s m)) as [w |] eqn:Ew; [discriminate |].
   destruct (sim_step n s t m HR Hin Hh Hbe Ecb Ew Hl) as [Hwin | (HR' & Hl' & Hlife)];
-    [left; exact Hwin |].
+    [apply up_self; left; exact Hwin |].
   pose proof (next_bound n s t m c b HR Hv Ecb Hlife) as Hbd. cbv zeta in Hbd.
   set (n' := if is_pump_big s m then S n else if is_create s m then O else n) in *.
   set (lo2 := if is_pump_big s m then S lo else if is_create s m then O else lo) in *.
@@ -413,12 +442,13 @@ Proof.
       * specialize (H2 eq_refl). apply Nat2Z.inj_le in Hlo2. nia.
       * pose proof (no_big_n _ _ _ HR' Ebig) as En. rewrite En in Hbd, Hlo2 |- *.
         assert (lo2 = O) as E0 by lia. rewrite E0 in H1. cbn in *. lia.
-    + right. exists n', (stepA s m), c2, b2, lo2, f. split; [exact HR' |]. auto.
+    + apply up_self. right. exists n', (stepA s m), c2, b2, lo2, f. split; [exact HR' |]. auto.
 Qed.
 
-Theorem good_safe : safe_set PA good.
+(** The safe set is [up PA good]: [good] up to raising A's life. *)
+Lemma good_step : forall t, good t -> safe_step PA (up PA good) t.
 Proof.
-  intros t [Hw | (n & s & c & b & lo & [| f] & HR & Hlo & Hl & Hv & Hc)].
+  intros t [Hw | (n & s & c & b & lo & [| f] & HR & Hlo & Hl & Hv & Hc)]; unfold safe_step.
   - rewrite Hw. repeat split; try discriminate; intros Hn; discriminate.
   - discriminate.
   - pose proof (RA_winner _ _ _ HR) as Ew. pose proof (RA_to_move _ _ _ HR) as Em.
@@ -439,13 +469,16 @@ Proof.
       eapply good_next; eauto.
 Qed.
 
+Theorem good_safe : safe_set PA (up PA good).
+Proof. exact (safe_set_up PA good good_step). Qed.
+
 (** A is safe from every real state that a turn start [s] abstracts, if
     [s]'s key has an entry and B's life is on or below its line. *)
 Theorem cert_safe : forall n s t c b, RA n s t -> (1 <= t.(sideB).(life))%nat ->
   is_turn_start s = true -> lookup (key s) = Some (c, b) -> blife t <= c + b * Z.of_nat n ->
   safe PA t.
 Proof.
-  intros n s t c b HR Hl Ht Hk Hv. exists good. split; [exact good_safe |].
+  intros n s t c b HR Hl Ht Hk Hv. exists (up PA good). split; [exact good_safe |].
   exact (good_entry n s t c b HR Hl Ht Hk Hv).
 Qed.
 
