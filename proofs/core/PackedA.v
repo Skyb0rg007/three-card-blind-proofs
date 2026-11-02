@@ -5,7 +5,10 @@
     passes [CheckerA.check_node]. Here [lookup] reads a table of [N] entries
     kept in primitive arrays of 63-bit integers. The keys are turn starts
     packed with [Packed.enc], sorted; the third column holds each entry's
-    line [(c, b)], with [c + 2048] in bits 8–19 and [b] in bits 0–7.
+    line [(c, b)], with [c + 2048] in bits 8–19 and [b] in bits 0–7, and in
+    bits 20–26 the life B has in the entry's certificate state (any life is
+    sound, [CheckerA.entry]; a small one makes the check faster, since the
+    model's naturals are unary).
 
     The table is larger than a primitive array may be ([PArray.max_length]
     is about 4.2M), so each column is cut into parts of [2^20] entries:
@@ -19,7 +22,7 @@ From Stdlib Require Import List Bool Arith ZArith Lia Uint63 PArray.
 Import ListNotations.
 From TCB.Spec Require Import Model Game.
 From TCB.Proofs Require Import Packed.
-From TCB.Proofs Require CheckerA SaturationA.
+From TCB.Proofs Require CheckerA SaturationA MemoA.
 
 (** The low [k] bits of [i], as an integer. *)
 Fixpoint zfield (k : nat) (i : int) : Z :=
@@ -34,14 +37,17 @@ Definition get (col : array (array int)) (j : int) : int := col.[shr j 20].[iand
 Section ATable.
 
 (** CheckerA's parameters: A's BIG size, B's saturation size, B's Thopter
-    limit, A's Thopter cut, B's life in entries; and the fuel. *)
-Variables K Hb ott tt M fuel : nat.
+    limit and A's Thopter cut; and the fuel. *)
+Variables K Hb ott tt fuel : nat.
 
 (** The columns and the number of entries. *)
 Variables C1 C2 CV : array (array int).
 Variable N : int.
 
 Definition line_of (j : int) : Z * Z := (zfield 12 (shr (get CV j) 8) - 2048, zfield 8 (get CV j))%Z.
+
+(** B's life in entry [j]'s certificate state. *)
+Definition life_of (j : int) : nat := nat_of_int 7 (shr (get CV j) 20).
 
 (** The first index in [lo, hi) whose key is not below [(k1, k2)]. *)
 Fixpoint alower (f : nat) (lo hi k1 k2 : int) : int :=
@@ -63,10 +69,12 @@ Definition alookup (s : state) : option (Z * Z) :=
   let j := astart k1 k2 in
   if found j k1 k2 then if state_eqb (dec k1 k2) s then Some (line_of j) else None else None.
 
-(** A tries its moves in order ([hint] allows every move). *)
+(** Entry [j] checks, searched with [MemoA.check_m] (which implies
+    [CheckerA.check_node] with every move allowed). *)
 Definition aentry_ok (j : int) : bool :=
   let '(c, b) := line_of j in
-  CheckerA.check_node K Hb ott tt alookup hint fuel true (CheckerA.entry M (dec (get C1 j) (get C2 j))) c b O.
+  fst (MemoA.check_m K Hb ott tt alookup shash fuel true (CheckerA.entry (life_of j) (dec (get C1 j) (get C2 j))) c b O
+         MemoA.MLeaf).
 
 Lemma alookup_spec : forall s l, alookup s = Some l ->
   exists j, ltb j N = true /\ s = dec (get C1 j) (get C2 j) /\ l = line_of j.
@@ -88,10 +96,11 @@ Theorem table_safe_a : forall bs c b, chain aentry_ok bs -> hd 0%uint63 bs = 0%u
   safe PA (init PA).
 Proof.
   intros bs c b Hc H0 Hl HbK Hb1 Hk Hc20.
-  refine (SaturationA.certified_opening_a K Hb ott tt M alookup hint fuel c b HbK Hb1 _ Hk Hc20).
+  refine (SaturationA.certified_opening_a K Hb ott tt alookup hint c b HbK Hb1 _ Hk Hc20).
   intros s c' b' Hlk. destruct (alookup_spec s _ Hlk) as (j & Hj & -> & E).
   pose proof (chain_all aentry_ok bs _ Hc H0 Hl j Hj) as Hok.
-  unfold aentry_ok in Hok. rewrite <- E in Hok. exact Hok.
+  unfold aentry_ok in Hok. rewrite <- E in Hok.
+  exists (life_of j). exact (MemoA.check_m_true K Hb ott tt alookup shash _ _ _ _ _ Hok).
 Qed.
 
 End ATable.

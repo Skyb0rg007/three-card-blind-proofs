@@ -5,7 +5,6 @@ Definition K := 21.
 Definition Hb := 7.
 Definition ott := 6.
 Definition tt := 8.
-Definition M := 64.
 Definition fuel := 200.
 Require Import DataC1_0.
 Require Import DataC1_1.

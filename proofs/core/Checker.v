@@ -241,10 +241,9 @@ Qed.
 
 (** ** Soundness *)
 
-Variable fuel : nat.
 
 (** Every entry checks. *)
-Hypothesis cert_ok : forall s v, lookup s = Some v -> check_node fuel true (entry s v) = true.
+Hypothesis cert_ok : forall s v, lookup s = Some v -> exists fuel, check_node fuel true (entry s v) = true.
 
 (** The simulation facts (discharged in a separate file). *)
 Hypothesis sim_mine : forall s t m,
@@ -289,9 +288,9 @@ Proof.
   assert (HR' : R (step s m) (step t m)).
   { apply sim_step; auto. eapply check_winner. exact Hc. }
   destruct (check_below f (step s m) Hc) as [(_ & _ & v & Hl & Hv) | Hr].
-  - exists (entry (key (step s m)) v), fuel. split.
+  - destruct (cert_ok _ _ Hl) as [fuel Hf]. exists (entry (key (step s m)) v), fuel. split.
     + eapply R_trans; [| exact HR']. eapply R_key; eassumption.
-    + apply cert_ok. exact Hl.
+    + exact Hf.
   - exists (step s m), f. auto.
 Qed.
 
@@ -322,7 +321,7 @@ Qed.
 Theorem cert_safe : forall s v t, lookup s = Some v -> R (entry s v) t -> safe PB t.
 Proof.
   intros s v t Hl HR. exists good. split; [exact good_safe |].
-  exists (entry s v), fuel. split; [exact HR | apply cert_ok; exact Hl].
+  destruct (cert_ok _ _ Hl) as [fuel Hf]. exists (entry s v), fuel. split; [exact HR | exact Hf].
 Qed.
 
 End Checker.

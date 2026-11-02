@@ -12,8 +12,9 @@
     the only thing [n] changes is the damage the BIG Walker deals to B when
     unblocked (the [hit] edges); that is what [b] counts. Everything else
     follows [Checker]:
-    - **B's life** is not in the state: a certificate state carries the
-      fixed life [M], and each edge moves the line by B's life change.
+    - **B's life** is not in the state: a certificate state carries some
+      life (each entry chooses its own, [entry m]), and each edge moves the
+      line by B's life change.
     - **A's Thopters** are cut to [tt]: more Thopters only help A.
     - **A's graveyard** is dropped: A has no Elixir, so nothing reads it.
     - **B's Walkers** are saturated at [Hb] counters (R4, mirrored). Combat
@@ -35,9 +36,9 @@ Open Scope Z_scope.
 
 Section CheckerA.
 
-(** A's BIG size, B's saturation size, B's Thopter limit, A's Thopter cut,
-    and B's life in certificate states. *)
-Variables K Hb ott tt M : nat.
+(** A's BIG size, B's saturation size, B's Thopter limit and A's Thopter
+    cut. *)
+Variables K Hb ott tt : nat.
 
 (** ** Normalised states and keys *)
 
@@ -60,8 +61,10 @@ Definition key (s : state) : state :=
   mkState s.(active) s.(first_turn) (set_gy_w 0 s.(sideA))
     (set_life 0 s.(sideB)) s.(cmb) s.(pend).
 
-(** The position an entry of the certificate stands for. *)
-Definition entry (s : state) : state := map_side PB (set_life M) s.
+(** The position an entry of the certificate stands for, with B on [m]
+    life. Any [m] is sound: B's life is tracked by the line, and the
+    certificate state's life only has to stay positive through the turn. *)
+Definition entry (m : nat) (s : state) : state := map_side PB (set_life m) s.
 
 Definition has_big (s : state) : bool :=
   existsb (fun w => Nat.eqb w.(counters) K) s.(sideA).(bf).
@@ -285,10 +288,9 @@ Qed.
 
 (** ** Soundness *)
 
-Variable fuel : nat.
-
-(** Every entry checks. *)
-Hypothesis cert_ok : forall s c b, lookup s = Some (c, b) -> check_node fuel true (entry s) c b O = true.
+(** Every entry checks, with some life for B and some fuel. *)
+Hypothesis cert_ok : forall s c b, lookup s = Some (c, b) ->
+  exists m fuel, check_node fuel true (entry m s) c b O = true.
 
 (** The simulation facts (discharged in a separate file). *)
 Hypothesis sim_mine : forall n s t m,
@@ -312,9 +314,8 @@ Hypothesis sim_step : forall n s t m,
    (1 <= (step t m).(sideB).(life))%nat /\
    blife (step t m) = blife t + (blife (stepA s m) - blife s) - (if is_hit s then Z.of_nat n else 0)).
 
-(** The key's facts: an entry abstracts the state it was looked up from. *)
-Hypothesis RA_key : forall n s t, RA n s t -> RA n (entry (key s)) t.
-Hypothesis has_big_key : forall s, has_big (entry (key s)) = has_big s.
+(** The key's fact: an entry abstracts the state it was looked up from. *)
+Hypothesis RA_key : forall n m s t, RA n s t -> RA n (entry m (key s)) t.
 
 Lemma check_below : forall f s c b lo, check_node f false s c b lo = true ->
   (winner s = None /\ is_turn_start s = true /\
@@ -343,9 +344,9 @@ Lemma good_entry : forall n s t c b, RA n s t -> (1 <= t.(sideB).(life))%nat ->
   lookup (key s) = Some (c, b) -> blife t <= c + b * Z.of_nat n -> good t.
 Proof.
   intros n s t c b HR Hl _ Hk Hv. right.
-  exists n, (entry (key s)), c, b, O, fuel.
-  split; [apply RA_key; exact HR |]. split; [lia |]. split; [exact Hl |]. split; [exact Hv |].
-  apply cert_ok. exact Hk.
+  destruct (cert_ok _ _ _ Hk) as (m & fuel & Hc).
+  exists n, (entry m (key s)), c, b, O, fuel.
+  split; [apply RA_key; exact HR |]. split; [lia |]. split; [exact Hl |]. split; [exact Hv | exact Hc].
 Qed.
 
 (** The edge's arithmetic: the child's line bounds the child's life. *)
@@ -438,14 +439,14 @@ Proof.
       eapply good_next; eauto.
 Qed.
 
-(** A is safe from every real state an entry abstracts, at a B life on or
-    below the entry's line. *)
-Theorem cert_safe : forall k c b n t, lookup k = Some (c, b) -> RA n (entry k) t ->
-  (1 <= t.(sideB).(life))%nat -> blife t <= c + b * Z.of_nat n -> safe PA t.
+(** A is safe from every real state that a turn start [s] abstracts, if
+    [s]'s key has an entry and B's life is on or below its line. *)
+Theorem cert_safe : forall n s t c b, RA n s t -> (1 <= t.(sideB).(life))%nat ->
+  is_turn_start s = true -> lookup (key s) = Some (c, b) -> blife t <= c + b * Z.of_nat n ->
+  safe PA t.
 Proof.
-  intros k c b n t Hk HR Hl Hv. exists good. split; [exact good_safe |].
-  right. exists n, (entry k), c, b, O, fuel. split; [exact HR |]. split; [lia |]. split; [exact Hl |].
-  split; [exact Hv | apply cert_ok; exact Hk].
+  intros n s t c b HR Hl Ht Hk Hv. exists good. split; [exact good_safe |].
+  exact (good_entry n s t c b HR Hl Ht Hk Hv).
 Qed.
 
 End CheckerA.

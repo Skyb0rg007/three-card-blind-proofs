@@ -62,9 +62,7 @@ Fixpoint check_win (r fuel : nat) (root : bool) (s : state) : bool :=
       end
   end.
 
-Variable fuel : nat.
-
-Hypothesis cert_ok : forall s r v, lookup s r = Some v -> check_win r fuel true (entry s v) = true.
+Hypothesis cert_ok : forall s r v, lookup s r = Some v -> exists fuel, check_win r fuel true (entry s v) = true.
 
 Lemma check_win_winner : forall r f root s, check_win r f root s = true -> winner s <> Some PA.
 Proof.
@@ -121,20 +119,20 @@ End Rank.
 Theorem cert_wins : forall r s v t, lookup s r = Some v -> R H (entry s v) t -> wins PB t.
 Proof.
   induction r as [r IH] using lt_wf_ind.
-  intros s v t Hl HR. apply (check_win_wins r IH fuel true (entry s v) t); [| exact HR].
-  apply cert_ok. exact Hl.
+  intros s v t Hl HR. destruct (cert_ok _ _ _ Hl) as [fuel Hf].
+  exact (check_win_wins r IH fuel true (entry s v) t Hf HR).
 Qed.
 
 End WinCert.
 
 (** If every entry checks and some entry for the opening's key asks for at
     most B's starting 20 life, B wins from the opening. *)
-Theorem certified_win_opening : forall H ott tt lookup below hint fuel p r v,
-  (forall s r v, lookup s r = Some v -> check_win H ott tt lookup below hint r fuel true (entry s v) = true) ->
+Theorem certified_win_opening : forall H ott tt lookup below hint p r v,
+  (forall s r v, lookup s r = Some v -> exists fuel, check_win H ott tt lookup below hint r fuel true (entry s v) = true) ->
   lookup (key H tt (init p)) r = Some v -> v <= 20 -> wins PB (init p).
 Proof.
-  intros H ott tt lookup below hint fuel p r v Hok Hl Hv.
-  apply (cert_wins H ott tt lookup below hint fuel Hok r _ v _ Hl).
+  intros H ott tt lookup below hint p r v Hok Hl Hv.
+  apply (cert_wins H ott tt lookup below hint Hok r _ v _ Hl).
   apply (R_key H tt (init p) (init p) v (R_init H p)).
   destruct p; exact Hv.
 Qed.

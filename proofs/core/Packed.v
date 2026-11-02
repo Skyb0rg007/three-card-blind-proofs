@@ -17,124 +17,8 @@ From Stdlib Require Import List Bool Arith ZArith Lia Uint63 PArray.
 Import ListNotations.
 From TCB.Spec Require Import Model Game.
 From TCB.Proofs Require Import Checker Saturation WinCert.
-
-(** ** Boolean equality of states
-
-    A plain field-by-field comparison: much faster under [vm_compute] than
-    evaluating a [decide equality] proof. *)
-
-Fixpoint lbeq {A} (eqb : A -> A -> bool) (l l' : list A) : bool :=
-  match l, l' with
-  | [], [] => true
-  | x :: r, y :: r' => eqb x y && lbeq eqb r r'
-  | _, _ => false
-  end.
-
-Lemma lbeq_eq : forall {A} (eqb : A -> A -> bool), (forall x y, eqb x y = true -> x = y) ->
-  forall l l', lbeq eqb l l' = true -> l = l'.
-Proof.
-  intros A eqb He l. induction l as [| x r IH]; intros [| y r'] Hl; cbn in Hl; try discriminate; auto.
-  apply andb_true_iff in Hl as [Hx Hr]. f_equal; auto.
-Qed.
-
-Definition walker_beq (x y : walker) : bool :=
-  Nat.eqb x.(counters) y.(counters) && Bool.eqb x.(wtapped) y.(wtapped) && Bool.eqb x.(sick) y.(sick).
-
-Definition card_beq (x y : card) : bool :=
-  match x, y with CWalker, CWalker | CElixir, CElixir => true | _, _ => false end.
-
-Definition side_beq (x y : side) : bool :=
-  Nat.eqb x.(life) y.(life) && Bool.eqb x.(city) y.(city) && Nat.eqb x.(pool) y.(pool)
-  && Nat.eqb x.(hand_w) y.(hand_w) && Bool.eqb x.(hand_e) y.(hand_e) && lbeq walker_beq x.(bf) y.(bf)
-  && Bool.eqb x.(elixir_bf) y.(elixir_bf) && Nat.eqb x.(thop_u) y.(thop_u) && Nat.eqb x.(thop_t) y.(thop_t)
-  && lbeq card_beq x.(library) y.(library) && Nat.eqb x.(gy_w) y.(gy_w).
-
-Definition stepk_beq (x y : stepk) : bool :=
-  match x, y with
-  | Upkeep, Upkeep | DrawStep, DrawStep | Main1, Main1 | BeginCombat, BeginCombat
-  | DeclAtk, DeclAtk | DeclBlk, DeclBlk | DamageStep, DamageStep | EndCombat, EndCombat
-  | Main2, Main2 | EndStep, EndStep => true
-  | _, _ => false
-  end.
-
-Definition blocker_beq (x y : blocker) : bool :=
-  match x, y with BW i, BW j => Nat.eqb i j | BT, BT => true | _, _ => false end.
-
-Definition combat_beq (x y : combat) : bool :=
-  lbeq Nat.eqb x.(atk) y.(atk) && Nat.eqb x.(atk_thop) y.(atk_thop)
-  && lbeq (lbeq blocker_beq) x.(blk) y.(blk) && Nat.eqb x.(trades) y.(trades).
-
-Definition pending_beq (x y : pending) : bool :=
-  match x, y with
-  | Window st p b, Window st' p' b' => stepk_beq st st' && player_eqb p p' && Bool.eqb b b'
-  | ChooseAttack, ChooseAttack | ChooseBlock, ChooseBlock | ChooseOrder, ChooseOrder
-  | ChooseDamage, ChooseDamage => true
-  | ChooseShuffle st p cs, ChooseShuffle st' p' cs' =>
-      stepk_beq st st' && player_eqb p p' && lbeq card_beq cs cs'
-  | Over w, Over w' => player_eqb w w'
-  | _, _ => false
-  end.
-
-Definition state_eqb (x y : state) : bool :=
-  player_eqb x.(active) y.(active) && Bool.eqb x.(first_turn) y.(first_turn)
-  && side_beq x.(sideA) y.(sideA) && side_beq x.(sideB) y.(sideB)
-  && combat_beq x.(cmb) y.(cmb) && pending_beq x.(pend) y.(pend).
-
-Lemma player_eqb_eq : forall x y, player_eqb x y = true -> x = y.
-Proof. intros [] []; cbn; congruence. Qed.
-
-Lemma card_beq_eq : forall x y, card_beq x y = true -> x = y.
-Proof. intros [] []; cbn; congruence. Qed.
-
-Lemma stepk_beq_eq : forall x y, stepk_beq x y = true -> x = y.
-Proof. intros [] []; cbn; congruence. Qed.
-
-Lemma blocker_beq_eq : forall x y, blocker_beq x y = true -> x = y.
-Proof. intros [i |] [j |]; cbn; try congruence. intros E. apply Nat.eqb_eq in E. congruence. Qed.
-
-Lemma nat_eqb_eq : forall x y, Nat.eqb x y = true -> x = y.
-Proof. apply Nat.eqb_eq. Qed.
-
-Lemma walker_beq_eq : forall x y, walker_beq x y = true -> x = y.
-Proof.
-  intros [] [] E. unfold walker_beq in E. cbn in E.
-  repeat rewrite andb_true_iff in E. destruct E as [[E1 E2] E3].
-  apply Nat.eqb_eq in E1. apply Bool.eqb_prop in E2, E3. congruence.
-Qed.
-
-(** Turn every comparison hypothesis into an equality. *)
-Ltac beq_split :=
-  repeat match goal with
-  | H : _ && _ = true |- _ => apply andb_true_iff in H as [? ?]
-  | H : Nat.eqb _ _ = true |- _ => apply Nat.eqb_eq in H
-  | H : Bool.eqb _ _ = true |- _ => apply Bool.eqb_prop in H
-  | H : player_eqb _ _ = true |- _ => apply player_eqb_eq in H
-  | H : stepk_beq _ _ = true |- _ => apply stepk_beq_eq in H
-  | H : lbeq Nat.eqb _ _ = true |- _ => apply (lbeq_eq _ nat_eqb_eq) in H
-  | H : lbeq walker_beq _ _ = true |- _ => apply (lbeq_eq _ walker_beq_eq) in H
-  | H : lbeq card_beq _ _ = true |- _ => apply (lbeq_eq _ card_beq_eq) in H
-  | H : lbeq (lbeq blocker_beq) _ _ = true |- _ => apply (lbeq_eq _ (lbeq_eq _ blocker_beq_eq)) in H
-  end.
-
-Lemma side_beq_eq : forall x y, side_beq x y = true -> x = y.
-Proof. intros [] [] E. unfold side_beq in E. cbn in E. beq_split. congruence. Qed.
-
-Lemma combat_beq_eq : forall x y, combat_beq x y = true -> x = y.
-Proof. intros [] [] E. unfold combat_beq in E. cbn in E. beq_split. congruence. Qed.
-
-Lemma pending_beq_eq : forall x y, pending_beq x y = true -> x = y.
-Proof. intros [] [] E; cbn in E; try discriminate; beq_split; congruence. Qed.
-
-Lemma state_eqb_eq : forall x y, state_eqb x y = true -> x = y.
-Proof.
-  intros [] [] E. unfold state_eqb in E. cbn in E. beq_split.
-  repeat match goal with
-  | H : side_beq _ _ = true |- _ => apply side_beq_eq in H
-  | H : combat_beq _ _ = true |- _ => apply combat_beq_eq in H
-  | H : pending_beq _ _ = true |- _ => apply pending_beq_eq in H
-  end.
-  congruence.
-Qed.
+From TCB.Proofs Require Export StateEq.
+From TCB.Proofs Require MemoB.
 
 (** ** Packing turn starts into two integers *)
 
@@ -200,6 +84,47 @@ Definition enc (s : state) : int * int :=
 Definition dec (k1 k2 : int) : state :=
   let p := if bit k1 53 then PB else PA in
   mkState p (bit k1 54) (dec_side k1) (dec_side k2) no_combat (Window Upkeep p false).
+
+(** ** A hash of states, for the memos of [MemoA] and [MemoB]
+
+    Any function would be sound; this one is cheap under [vm_compute] and
+    separates the states of a turn well. Lives are left out. *)
+
+(** A natural, capped at 15. *)
+Definition hn (n : nat) : int :=
+  match n with
+  | 0 => 0 | 1 => 1 | 2 => 2 | 3 => 3 | 4 => 4 | 5 => 5 | 6 => 6 | 7 => 7
+  | 8 => 8 | 9 => 9 | 10 => 10 | 11 => 11 | 12 => 12 | 13 => 13 | 14 => 14 | _ => 15
+  end.
+Definition hbit (b : bool) (k : int) : int := if b then k else 0.
+Definition hwalker (w : walker) : int := ior (hn w.(counters)) (ior (hbit w.(wtapped) 16) (hbit w.(sick) 32)).
+Fixpoint hbf (l : list walker) : int :=
+  match l with [] => 0 | w :: l => ior (add (hwalker w) 1) (shl (hbf l) 7) end.
+Definition hside (sd : side) : int :=
+  ior (hbit sd.(city) 1) (ior (shl (hn sd.(pool)) 1) (ior (shl (hn sd.(hand_w)) 5) (ior (hbit sd.(hand_e) 512)
+  (ior (hbit sd.(elixir_bf) 1024) (ior (shl (hn sd.(thop_u)) 11) (ior (shl (hn sd.(thop_t)) 15)
+  (ior (shl (hn (List.length sd.(library))) 19) (shl (hbf sd.(bf)) 23)))))))).
+Definition hstep (st : stepk) : int :=
+  match st with
+  | Upkeep => 0 | DrawStep => 1 | Main1 => 2 | BeginCombat => 3 | DeclAtk => 4
+  | DeclBlk => 5 | DamageStep => 6 | EndCombat => 7 | Main2 => 8 | EndStep => 9
+  end.
+Definition hpend (p : pending) : int :=
+  match p with
+  | Window st p b => ior (hstep st) (ior (hbit (player_bit p) 16) (hbit b 32))
+  | ChooseAttack => 64 | ChooseBlock => 65 | ChooseOrder => 66 | ChooseDamage => 67
+  | ChooseShuffle _ p cs => ior 68 (ior (hbit (player_bit p) 16) (shl (hn (List.length cs)) 7))
+  | Over _ => 69
+  end.
+Fixpoint hblk (l : list (list blocker)) : int :=
+  match l with [] => 0 | bs :: l => add (hn (List.length bs)) (shl (hblk l) 4) end.
+Fixpoint hatk (l : list nat) : int :=
+  match l with [] => 0 | i :: l => ior (add (hn i) 1) (shl (hatk l) 4) end.
+Definition hcombat (c : combat) : int :=
+  ior (hatk c.(atk)) (ior (shl (hn c.(atk_thop)) 12) (ior (shl (hblk c.(blk)) 16) (shl (hn c.(trades)) 28))).
+Definition shash (s : state) : int :=
+  add (PrimInt63.mul (add (PrimInt63.mul (hside s.(sideA)) 1000003) (hside s.(sideB))) 1000033)
+    (ior (hpend s.(pend)) (shl (hcombat s.(cmb)) 11)).
 
 (** ** Checking every index of a table *)
 
@@ -290,8 +215,6 @@ Qed.
 
 End Keys.
 
-(** B's moves are all tried: the checks are then plain searches. *)
-Definition hint (_ : state) (_ : move) : bool := true.
 
 (** ** Win tables: keys, then rank and value *)
 
@@ -330,8 +253,11 @@ Definition lookup (s : state) (r : nat) : option nat :=
 Definition below (s : state) (r : nat) : option nat :=
   let '(k1, k2) := enc s in scan_below 64 (start K1 K2 k1 k2) k1 k2 r None.
 
+(** Record [j] checks, searched with [MemoB.check_mw] (which implies
+    [WinCert.check_win] with every move of B's allowed). *)
 Definition record_ok (j : int) : bool :=
-  check_win H ott tt lookup below hint (rank_of j) fuel true (entry (dec K1.[j] K2.[j]) (val_of j)).
+  fst (MemoB.check_mw H ott tt shash lookup below (rank_of j) fuel true (entry (dec K1.[j] K2.[j]) (val_of j))
+         MemoA.MLeaf).
 
 Lemma scan_spec : forall f j k1 k2 r i, scan f j k1 k2 r = Some i ->
   ltb i (PArray.length K1) = true /\ K1.[i] = k1 /\ K2.[i] = k2 /\ rank_of i = r.
@@ -360,9 +286,9 @@ Theorem table_wins : forall bs r v, chain record_ok bs -> hd 0%uint63 bs = 0%uin
   wins PB (init PB).
 Proof.
   intros bs r v Hc H0 Hl Hr Hv.
-  refine (certified_win_opening H ott tt lookup below hint fuel PB r v _ Hr Hv).
+  refine (certified_win_opening H ott tt lookup below hint PB r v _ Hr Hv).
   intros s r' v' Hlk. destruct (lookup_spec s r' v' Hlk) as (j & Hj & -> & -> & ->).
-  exact (chain_all record_ok bs _ Hc H0 Hl j Hj).
+  exact (MemoB.check_mw_true H ott tt shash lookup below _ _ _ (chain_all record_ok bs _ Hc H0 Hl j Hj)).
 Qed.
 
 End WinTable.
@@ -381,8 +307,10 @@ Definition slookup (s : state) : option nat :=
   let j := start K1 K2 k1 k2 in
   if at_key K1 K2 j k1 k2 then if state_eqb (dec k1 k2) s then Some (sval_of j) else None else None.
 
+(** Entry [j] checks, searched with [MemoB.check_mb] (which implies
+    [Checker.check_node] with every move of B's allowed). *)
 Definition entry_ok (j : int) : bool :=
-  check_node H ott tt slookup hint fuel true (entry (dec K1.[j] K2.[j]) (sval_of j)).
+  fst (MemoB.check_mb H ott tt shash slookup fuel true (entry (dec K1.[j] K2.[j]) (sval_of j)) MemoA.MLeaf).
 
 Lemma slookup_spec : forall s v, slookup s = Some v ->
   exists j, ltb j (PArray.length K1) = true /\ s = dec K1.[j] K2.[j] /\ v = sval_of j.
@@ -401,9 +329,9 @@ Theorem table_safe : forall p bs v, chain entry_ok bs -> hd 0%uint63 bs = 0%uint
   safe PB (init p).
 Proof.
   intros p bs v Hc H0 Hl Hr Hv.
-  refine (certified_opening H ott tt slookup hint fuel p v _ Hr Hv).
+  refine (certified_opening H ott tt slookup hint p v _ Hr Hv).
   intros s v' Hlk. destruct (slookup_spec s v' Hlk) as (j & Hj & -> & ->).
-  exact (chain_all entry_ok bs _ Hc H0 Hl j Hj).
+  exact (MemoB.check_mb_true H ott tt shash slookup _ _ (chain_all entry_ok bs _ Hc H0 Hl j Hj)).
 Qed.
 
 End SafeTable.

@@ -310,21 +310,7 @@ end
    inverts it). *)
 let enc = Certify.enc
 
-let field x off w = (x lsr off) land ((1 lsl w) - 1)
-let bit x off = field x off 1 = 1
-
-let dec_side x =
-  let dw o = { counters = field x o 5; wtapped = bit x (o + 5); sick = bit x (o + 6) } in
-  let card o = if bit x o then CElixir else CWalker in
-  { life = field x 0 5; city = bit x 5; pool = field x 6 3; hand_w = field x 9 2; hand_e = bit x 11;
-    bf = List.filteri (fun j _ -> j < field x 25 2) [ dw 27; dw 34; dw 41 ]; elixir_bf = bit x 12;
-    thop_u = field x 13 5; thop_t = field x 18 5;
-    library = List.filteri (fun j _ -> j < field x 48 2) [ card 50; card 51; card 52 ]; gy_w = field x 23 2 }
-
-let dec (k1, k2) =
-  let p = if bit k1 53 then PB else PA in
-  { active = p; first_turn = bit k1 54; sideA = dec_side k1; sideB = dec_side k2; cmb = no_combat;
-    pend = Window (Upkeep, p, false) }
+let dec = Certify.dec
 
 (* An entry's value: its line, and the layer of pass 1 that found it. *)
 let venc (c, b) layer = (((c + 4096) lsl 4) lor b) lsl 12 lor layer
@@ -539,27 +525,33 @@ let levels dir k1 k2 =
 (* ** The certificate in Rocq (PackedA.v)
 
    [certify-a-export ENTRIES STARTER OUTDIR CHUNKS] reads the entries [run]
-   wrote (sorted by packed key) and checks every one exactly as Rocq will:
-   the lookup is a binary search over the sorted keys that answers only for
-   a state that decodes back to itself, A tries every move in order (Rocq's
-   hint is [true]), and the fuel is TCB_FUEL. With no failure, and the
-   opening's line allowing 20 life, it writes the table to OUTDIR as
-   PackedA reads it (each column cut into parts of 2^20 entries, one
-   compressed file per part), CHUNKS files that each check a slice of the
-   entries, and ADraw.v, which proves [a_first_a_safe] from them. The slices
-   are balanced by the cost of their checks here (lookups made, plus one
-   per entry).
+   wrote (sorted by packed key) and checks every one exactly as Rocq will,
+   with the extracted [MemoA.check_m]: the lookup is a binary search over
+   the sorted keys that answers only for a state that decodes back to
+   itself, and the fuel is TCB_FUEL. Each entry also gets the life B has in
+   its certificate state (PackedA's [life_of]): the check runs first with
+   TCB_M, noting the least life B has in any state it steps to, and the
+   entry keeps just enough life for B to stay alive through the turn (1 on
+   B's own turns). With that life the search is the same, and cheaper in
+   Rocq, whose naturals are unary; the check is run again with it, as Rocq
+   will. With no failure, and the opening's line allowing 20 life, it
+   writes the table to OUTDIR as PackedA reads it (each column cut into
+   parts of 2^20 entries, one compressed file per part), CHUNKS files that
+   each check a slice of the entries, and ADraw.v, which proves
+   [a_first_a_safe] from them. The slices are balanced by the cost of their
+   checks here (nodes searched and lookups made, plus one per entry).
 
    TCB_DRYRUN=1 checks without writing; TCB_RANGE=LO,HI checks only the
-   entries in [LO, HI), and TCB_HINT=oracle with the oracle's hint, to
-   measure (neither writes). *)
+   entries in [LO, HI), to measure (it doesn't write). *)
 
-(* A line packed as PackedA.line_of reads it. *)
-let pack_line (c, b) =
-  if c < -2048 || c >= 2048 || b < 0 || b >= 256 then failwith "certify-a-export: a line out of range";
-  ((c + 2048) lsl 8) lor b
+(* A line, and the entry's life for B, packed as PackedA's line_of and
+   life_of read them. *)
+let pack_line (c, b) life =
+  if c < -2048 || c >= 2048 || b < 0 || b >= 256 || life < 0 || life >= 128 then
+    failwith "certify-a-export: a line out of range";
+  (life lsl 20) lor ((c + 2048) lsl 8) lor b
 
-let unpack_line v = ((v lsr 8) - 2048, v land 255)
+let unpack_line v = (((v lsr 8) land 4095) - 2048, v land 255)
 
 (* PackedA's parts: 2^part_bits entries each. *)
 let part_bits = 20
@@ -594,7 +586,7 @@ let write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0 =
       output_string oc (gen ^ header);
       Printf.fprintf oc
         "Definition K := %d.\nDefinition Hb := %d.\nDefinition ott := %d.\nDefinition tt := %d.\n\
-         Definition M := %d.\nDefinition fuel := %d.\n" p.k p.hb p.ott p.tt p.m p.fuel;
+         Definition fuel := %d.\n" p.k p.hb p.ott p.tt p.fuel;
       List.iter (Printf.fprintf oc "Require Import %s.\n") pieces;
       List.iter (fun (c, _) ->
           Printf.fprintf oc "Definition %s : array (array int) := [| %s | %s_0 |].\n" c
@@ -603,7 +595,7 @@ let write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0 =
       Printf.fprintf oc "Definition N : int := %d%%uint63.\n" n);
   let rec pairs = function a :: (b :: _ as r) -> (a, b) :: pairs r | _ -> [] in
   let ps = pairs bounds in
-  let ok = "aentry_ok K Hb ott tt M fuel C1 C2 CV N" in
+  let ok = "aentry_ok K Hb ott tt fuel C1 C2 CV N" in
   List.iteri (fun c (lo, hi) ->
       file (Printf.sprintf "Chunk%03d.v" c) (fun oc ->
           output_string oc ("(* Generated; do not edit. *)\n" ^ header ^ "Require Import Data.\n");
@@ -617,7 +609,7 @@ let write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0 =
       Printf.fprintf oc "\nDefinition bounds : list int := [%s]%%uint63.\n"
         (String.concat "; " (List.map string_of_int bounds));
       Printf.fprintf oc "\nTheorem a_first_a_safe_proved : a_first_a_safe.\nProof.\n";
-      Printf.fprintf oc "  apply (table_safe_a K Hb ott tt M fuel C1 C2 CV N bounds (%d)%%Z (%d)%%Z).\n" c0 b0;
+      Printf.fprintf oc "  apply (table_safe_a K Hb ott tt fuel C1 C2 CV N bounds (%d)%%Z (%d)%%Z).\n" c0 b0;
       Printf.fprintf oc "  - exact (%s).\n"
         (List.fold_right (fun c acc -> Printf.sprintf "conj Chunk%03d.chunk (%s)" c acc)
            (List.init (List.length ps) Fun.id) "I");
@@ -650,7 +642,7 @@ let export entries starter ~outdir ~chunks p =
   let k1s = Array.make n 0 and k2s = Array.make n 0 and ls = Array.make n 0 in
   let j = ref 0 in
   fold (fun l ->
-      Scanf.sscanf l "%d %d %d %d" (fun k1 k2 c b -> k1s.(!j) <- k1; k2s.(!j) <- k2; ls.(!j) <- pack_line (c, b));
+      Scanf.sscanf l "%d %d %d %d" (fun k1 k2 c b -> k1s.(!j) <- k1; k2s.(!j) <- k2; ls.(!j) <- pack_line (c, b) 0);
       incr j);
   for j = 1 to n - 1 do
     if compare (k1s.(j - 1), k2s.(j - 1)) (k1s.(j), k2s.(j)) >= 0 then failwith "certify-a-export: keys not sorted"
@@ -667,9 +659,18 @@ let export entries starter ~outdir ~chunks p =
     if !lo < n && k1s.(!lo) = k1 && k2s.(!lo) = k2 then Some !lo else None
   in
   let lk0 s = let e = enc s in match find e with Some j when dec e = s -> Some (unpack_line ls.(j)) | _ -> None in
-  let lookups = ref 0 in
+  let lookups = ref 0 and nodes = ref 0 and minlife = ref max_int in
   let lk s = incr lookups; lk0 s in
-  let oracle_hint = Sys.getenv_opt "TCB_HINT" = Some "oracle" in
+  (* MemoA's hash: any function is sound. [probe] also notes the least life
+     B has in a state the node steps to (over every move: an upper bound on
+     the life the search needs); [counting] counts the nodes searched. *)
+  let hash s = Hashtbl.hash_param 100 400 s in
+  let probe s =
+    List.iter (fun m -> let l = (a_stepA p.k p.hb p.tt s m).sideB.life in if l < !minlife then minlife := l) (moves s);
+    hash s
+  in
+  let counting s = incr nodes; hash s in
+  let check_m h s life c b = fst (a_check_m p.k p.hb p.ott p.tt lk h p.fuel true (a_entry life s) c b 0 MLeaf) in
   let s0 = init starter in
   let c0, b0 = match lk0 (a_key p.hb p.tt s0) with Some l -> l | None -> failwith "certify-a-export: no opening entry" in
   Printf.printf "opening: line (%d, %d), B has %d life\n%!" c0 b0 s0.sideB.life;
@@ -679,11 +680,20 @@ let export entries starter ~outdir ~chunks p =
     | Some r -> Scanf.sscanf r "%d,%d" (fun a b -> (max 0 a, min n b))
     | None -> (0, n)
   in
-  let write = rlo = 0 && rhi = n && (not oracle_hint) && Sys.getenv_opt "TCB_DRYRUN" <> Some "1" in
+  let write = rlo = 0 && rhi = n && Sys.getenv_opt "TCB_DRYRUN" <> Some "1" in
   (* each entry's cost, written by the workers into a shared file *)
   let costf = Filename.concat wdir (Printf.sprintf "export-a-%d-cost" (Unix.getpid ())) in
   let cost =
     let fd = Unix.openfile costf [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
+    Unix.ftruncate fd (8 * max 1 n);
+    let a = Bigarray.array1_of_genarray (Unix.map_file fd Bigarray.int Bigarray.c_layout true [| max 1 n |]) in
+    Unix.close fd;
+    a
+  in
+  (* each entry's packed line with its life, likewise *)
+  let packf = costf ^ "-lines" in
+  let packed =
+    let fd = Unix.openfile packf [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
     Unix.ftruncate fd (8 * max 1 n);
     let a = Bigarray.array1_of_genarray (Unix.map_file fd Bigarray.int Bigarray.c_layout true [| max 1 n |]) in
     Unix.close fd;
@@ -702,20 +712,20 @@ let export entries starter ~outdir ~chunks p =
           let a, b = Par.chunk (hi - lo) w k in
           let oc = open_out (name k) in
           let nb = ref 0 in
-          let ok, hint, reset = oracle p lk0 in
-          let hint_for s c b =
-            if oracle_hint then (reset (); ignore (ok true (a_entry p.m s) c b 0); hint) else fun _ _ -> true
-          in
           for j = lo + a to lo + b - 1 do
             let c, b = unpack_line ls.(j) in
             let s = dec (k1s.(j), k2s.(j)) in
-            let h = hint_for s c b in
+            minlife := max_int;
+            let life =
+              if check_m probe s p.m c b then if !minlife = max_int then 1 else max 1 (p.m - !minlife + 1) else p.m in
             lookups := 0;
-            if not (check p lk h s c b) then begin
+            nodes := 0;
+            if not (check_m counting s life c b) then begin
               incr nb;
               Printf.fprintf oc "%d %d %d %d\n" k1s.(j) k2s.(j) c b
             end;
-            cost.{j} <- !lookups
+            cost.{j} <- !nodes + !lookups;
+            packed.{j} <- pack_line (c, b) life
           done;
           close_out oc;
           !nb)
@@ -724,14 +734,18 @@ let export entries starter ~outdir ~chunks p =
     bad := !bad + Array.fold_left ( + ) 0 r;
     let nlk = ref 0 in
     for j = rlo to hi - 1 do nlk := !nlk + cost.{j} done;
-    Printf.printf "  slice %d of %d: %d failed so far, %d lookups so far (%.0fs)\n%!" (sl + 1) slices !bad !nlk
+    Printf.printf "  slice %d of %d: %d failed so far, cost %d so far (%.0fs)\n%!" (sl + 1) slices !bad !nlk
       (Unix.gettimeofday () -. t0)
   done;
   let total = ref 0 in
   for j = rlo to rhi - 1 do total := !total + cost.{j} done;
-  Printf.printf "checked as in Rocq (%s, fuel %d, M %d): %d of %d failed, %d lookups (%.1fs)\n%!"
-    (if oracle_hint then "the oracle's hint" else "every A move tried")
+  let lifes = Array.make 129 0 in
+  for j = rlo to rhi - 1 do let l = packed.{j} lsr 20 in lifes.(min l 128) <- lifes.(min l 128) + 1 done;
+  Printf.printf "checked as in Rocq (MemoA.check_m, fuel %d, B's life cut from %d): %d of %d failed, cost %d (%.1fs)\n%!"
     p.fuel p.m !bad (rhi - rlo) !total (Unix.gettimeofday () -. t0);
+  Printf.printf "B's life in the entries: %s\n%!"
+    (String.concat " " (List.filter (( <> ) "") (Array.to_list (Array.mapi (fun l x -> if x > 0 then Printf.sprintf "%d:%d" l x else "") lifes))));
+  for j = rlo to rhi - 1 do ls.(j) <- packed.{j} done;
   (* the slices for Rocq: [chunks] near-equal shares of the cost *)
   let bounds =
     let w = !total + n in
@@ -746,5 +760,6 @@ let export entries starter ~outdir ~chunks p =
     List.rev (if List.hd !bs = n then !bs else n :: !bs)
   in
   Sys.remove costf;
+  Sys.remove packf;
   if !bad > 0 || c0 < 20 then failwith "certify-a-export: not writing a failing certificate";
   if write then write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0

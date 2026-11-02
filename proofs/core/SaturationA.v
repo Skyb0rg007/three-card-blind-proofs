@@ -134,7 +134,7 @@ Section SaturationA.
 
 (** A's BIG size, B's saturation size, B's Thopter limit, A's Thopter cut,
     and B's life in certificate states. *)
-Variables K Hb ott tt M : nat.
+Variables K Hb ott tt : nat.
 Hypothesis HbK : Hb < K.
 Hypothesis Hb1 : 1 <= Hb.
 
@@ -1385,9 +1385,9 @@ Proof.
 Qed.
 
 (** The key's facts. *)
-Theorem RA_key : forall n s t, RA K Hb n s t -> RA K Hb n (entry M (key Hb tt s)) t.
+Theorem RA_key : forall n M s t, RA K Hb n s t -> RA K Hb n (entry M (key Hb tt s)) t.
 Proof.
-  intros n [act ft a b c pd] [act' ft' a' b' c' pd'] (E1 & E2 & E3 & E4 & Hn & HA & HB & Hd).
+  intros n M [act ft a b c pd] [act' ft' a' b' c' pd'] (E1 & E2 & E3 & E4 & Hn & HA & HB & Hd).
   rb_cbn. unfold entry, key, norm, map_side, get_side, set_side.
   cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
   refine (conj E1 (conj E2 (conj E3 (conj E4 (conj Hn (conj _ (conj _ Hd))))))).
@@ -1399,8 +1399,8 @@ Proof.
     exact (Checker.Forall2_walker_trans Hb _ _ _ (Checker.clamp_bf_rel Hb _) Hbw).
 Qed.
 
-Theorem has_big_key : forall s, has_big K (entry M (key Hb tt s)) = has_big K s.
-Proof. intros [act ft [] b c pd]. reflexivity. Qed.
+Theorem has_big_key : forall M s, has_big K (entry M (key Hb tt s)) = has_big K s.
+Proof. intros M [act ft [] b c pd]. reflexivity. Qed.
 
 End SaturationA.
 
@@ -1410,16 +1410,16 @@ End SaturationA.
     below the BIG size, and a Walker A casts (with at most one counter) is
     not BIG. *)
 
-Theorem certified_safe_a : forall K Hb ott tt M lookup hint fuel,
+Theorem certified_safe_a : forall K Hb ott tt lookup hint,
   Hb < K -> 1 <= Hb ->
   (forall s c b, lookup s = Some (c, b) ->
-     check_node K Hb ott tt lookup hint fuel true (entry M s) c b O = true) ->
-  forall k c b n t, lookup k = Some (c, b) -> RA K Hb n (entry M k) t ->
-  1 <= t.(sideB).(life) -> (blife t <= c + b * Z.of_nat n)%Z -> safe PA t.
+     exists M fuel, check_node K Hb ott tt lookup hint fuel true (entry M s) c b O = true) ->
+  forall n s t c b, RA K Hb n s t -> 1 <= t.(sideB).(life) -> is_turn_start s = true ->
+  lookup (key Hb tt s) = Some (c, b) -> (blife t <= c + b * Z.of_nat n)%Z -> safe PA t.
 Proof.
-  intros K Hb ott tt M lookup hint fuel HbK Hb1 Hok.
-  exact (cert_safe K Hb ott tt M lookup hint fuel Hok (sim_mine K Hb HbK Hb1) (sim_theirs K Hb HbK Hb1)
-           (sim_step K Hb tt HbK Hb1) (RA_key K Hb tt M HbK Hb1)).
+  intros K Hb ott tt lookup hint HbK Hb1 Hok.
+  exact (cert_safe K Hb ott tt lookup hint Hok (sim_mine K Hb HbK Hb1) (sim_theirs K Hb HbK Hb1)
+           (sim_step K Hb tt HbK Hb1) (RA_key K Hb tt HbK Hb1)).
 Qed.
 
 Lemma RA_init : forall K Hb p, RA K Hb 0 (init p) (init p).
@@ -1428,19 +1428,20 @@ Proof.
     repeat split; auto; constructor.
 Qed.
 
-(** If every certificate entry checks and the A-first opening's entry has
-    a line at least B's starting 20 life, A is safe (does not lose) from
-    the opening. *)
-Theorem certified_opening_a : forall K Hb ott tt M lookup hint fuel c b,
+(** If every certificate entry checks (each with its own life for B and
+    fuel) and the A-first opening's entry has a line at least B's starting
+    20 life, A is safe (does not lose) from the opening. *)
+Theorem certified_opening_a : forall K Hb ott tt lookup hint c b,
   Hb < K -> 1 <= Hb ->
   (forall s c b, lookup s = Some (c, b) ->
-     check_node K Hb ott tt lookup hint fuel true (entry M s) c b O = true) ->
+     exists M fuel, check_node K Hb ott tt lookup hint fuel true (entry M s) c b O = true) ->
   lookup (key Hb tt (init PA)) = Some (c, b) -> (20 <= c)%Z -> safe PA (init PA).
 Proof.
-  intros K Hb ott tt M lookup hint fuel c b HbK Hb1 Hok Hk Hc.
-  apply (certified_safe_a K Hb ott tt M lookup hint fuel HbK Hb1 Hok (key Hb tt (init PA)) c b 0 (init PA) Hk).
-  - apply (RA_key K Hb tt M HbK Hb1). apply RA_init.
+  intros K Hb ott tt lookup hint c b HbK Hb1 Hok Hk Hc.
+  apply (certified_safe_a K Hb ott tt lookup hint HbK Hb1 Hok 0 (init PA) (init PA) c b (RA_init K Hb PA)).
   - cbn. lia.
+  - reflexivity.
+  - exact Hk.
   - unfold blife. cbn. lia.
 Qed.
 
