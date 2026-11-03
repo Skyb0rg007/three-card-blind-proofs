@@ -24,15 +24,18 @@
 
     For the certificate tables, [normA] puts A's two Walkers in increasing
     order of (counters, tapped, sick), false before true, as the solvers'
-    [canon] sorts them. [Sym s (normA s)] holds for every [s]
-    ([Sym_normA]). [swapA] commutes with [bump], [more_thop] and the
-    checkers' [key], [entry] and [norm], and keeps their relations [R] and
-    [RA]; [safe_set_up_sym] and [safe_set_down_sym] close safe sets under
-    [Sym] as [Mono.safe_set_up] and [Mono.safe_set_down] do under life. *)
+    [canon] sorts them ([walker_ltb], [normA_sorted]). [Sym s (normA s)]
+    holds for every [s] ([Sym_normA]): [normA] is [swapA] or the identity,
+    and [swapA] swaps the Walkers and renames the combat as in [cmb_rel]'s
+    first case. [swapA] and [normA] commute with [bump] and [more_thop];
+    [safe_set_up_sym] and [safe_set_down_sym] close safe sets under [Sym]
+    as [Mono.safe_set_up] and [Mono.safe_set_down] do under life.
+    [SymCert] and [SymCertA] relate [swapA] to the checkers' abstractions
+    and prove the checkers sound for tables that store one Walker order. *)
 
 From Stdlib Require Import List Bool Arith Lia Permutation.
 Import ListNotations.
-From TCB.Spec Require Import Model Game Claims.
+From TCB.Spec Require Import Model Game.
 From TCB.Proofs Require Import GameFacts Mono Preservation.
 
 (** ** Renaming indices 0 and 1 *)
@@ -1358,6 +1361,9 @@ Definition normA (s : state) : state := if unsorted s.(sideA).(bf) then swapA s 
 
 Theorem Sym_normA : forall s, Sym s (normA s).
 Proof. intros s. unfold normA. destruct (unsorted _); [apply Sym_swapA | left; reflexivity]. Qed.
+
+Lemma normA_sw : forall s, exists sw : bool, normA s = if sw then swapA s else s.
+Proof. intros s. exists (unsorted s.(sideA).(bf)). reflexivity. Qed.
 
 Lemma normA_cases : forall s, normA s = s \/ normA s = swapA s.
 Proof. intros s. unfold normA. destruct (unsorted _); auto. Qed.

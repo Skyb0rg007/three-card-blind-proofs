@@ -1,7 +1,17 @@
 (** * Sorting A's Walkers in the certificate checkers
 
-    [Sym.swapA] commutes with the abstractions of [Checker] and [CheckerA]
-    and keeps their relations [R] and [RA]. *)
+    [Sym.swapA] commutes with the abstractions of [Checker] ([key],
+    [entry]) and [CheckerA] ([norm], [key], [entry]) and keeps their
+    relations [R] and [RA] ([R_swapA], [RA_swapA]); so a certificate state
+    abstracting a real state still does after [normA], against the real
+    state with its Walkers in the same order ([R_normA], [RA_normA]).
+
+    With these, [Checker.cert_safe] and [WinCert.cert_wins] hold for
+    certificates whose [lookup] may answer for a position with the entry of
+    the position with A's Walkers swapped ([cert_safe_sym],
+    [cert_wins_sym], and the openings [certified_opening_sym],
+    [certified_win_opening_sym]); [SymCertA] does the same for
+    [CheckerA]. *)
 
 From Stdlib Require Import List Bool Arith Lia Permutation.
 Import ListNotations.
