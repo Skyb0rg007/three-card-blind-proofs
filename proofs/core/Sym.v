@@ -33,8 +33,7 @@
 From Stdlib Require Import List Bool Arith Lia Permutation.
 Import ListNotations.
 From TCB.Spec Require Import Model Game Claims.
-From TCB.Proofs Require Import GameFacts Mono Preservation Checker Saturation.
-From TCB.Proofs Require CheckerA.
+From TCB.Proofs Require Import GameFacts Mono Preservation.
 
 (** ** Renaming indices 0 and 1 *)
 
@@ -792,6 +791,45 @@ Qed.
 
 (** *** Combat damage *)
 
+(** [do_damage] with its parts named (as [Saturation.damage_alt]). *)
+Definition sfights (c : combat) (js : list nat) := combine (combine c.(atk) c.(blk)) js.
+
+Definition sunblocked (a : side) (c : combat) (fs : list (nat * list blocker * nat)) : nat :=
+  list_sum (map (fun '(i, bs, _) => match bs with [] => walker_power a i | _ => 0 end) fs)
+  + (c.(atk_thop) - c.(trades)).
+
+Definition sadead (a d : side) (fs : list (nat * list blocker * nat)) : list nat :=
+  map (fun '(i, _, _) => i)
+    (filter (fun '(i, bs, _) =>
+               match bs with
+               | [] => false
+               | _ => walker_power a i <=? list_sum (map (blocker_toughness d) bs)
+               end) fs).
+
+Definition skilled (fs : list (nat * list blocker * nat)) : list blocker :=
+  flat_map (fun '(_, bs, j) => firstn j bs) fs.
+
+Definition sdamage (js : list nat) (s : state) : state :=
+  let ap := s.(active) in
+  let dp := defender s in
+  let a := get_side ap s in
+  let d := get_side dp s in
+  let c := s.(cmb) in
+  let fs := sfights c js in
+  let unblocked := sunblocked a c fs in
+  let killed := skilled fs in
+  let d_dead := flat_map (fun b => match b with BW i => [i] | BT => [] end) killed in
+  let d_thop_dead := count_occ blocker_eq_dec killed BT + c.(trades) in
+  let a := bury (sadead a d fs) (set_thop_t (a.(thop_t) - c.(trades)) a) in
+  let d := bury d_dead (set_thop_u (d.(thop_u) - d_thop_dead) d) in
+  let s := set_cmb no_combat (set_side dp d (set_side ap a s)) in
+  if d.(life) <=? unblocked then set_pend (Over ap) s
+  else set_pend (Window DamageStep ap false)
+         (map_side dp (fun d => set_life (d.(life) - unblocked) d) s).
+
+Lemma sdamage_eq : forall js s, do_damage js s = sdamage js s.
+Proof. reflexivity. Qed.
+
 Lemma wp_sw : forall a i, 2 <= length a.(bf) -> walker_power (sw_side a) i = walker_power a (swi i).
 Proof.
   intros [] i H. unfold walker_power, sw_side, set_bf. cbn in *.
@@ -877,9 +915,9 @@ Lemma flat_map_map' : forall {X Y Z} (f : Y -> list Z) (g : X -> Y) l,
 Proof. intros X Y Z f g l. induction l as [| x l IH]; cbn; congruence. Qed.
 
 Lemma fights_plain : forall atk blk js k k' tr tr',
-  fights_of (mkCombat (map swi atk) k blk tr) js = map rnA (fights_of (mkCombat atk k' blk tr') js).
+  sfights (mkCombat (map swi atk) k blk tr) js = map rnA (sfights (mkCombat atk k' blk tr') js).
 Proof.
-  intros. unfold fights_of. cbn [Model.atk Model.blk].
+  intros. unfold sfights. cbn [Model.atk Model.blk].
   rewrite combine_map_l, combine_map_l. apply map_ext. intros [[i bs] j]. reflexivity.
 Qed.
 
@@ -892,37 +930,37 @@ Qed.
 
 Lemma fights_crossed : forall r blk js k k' tr tr', Forall (fun i => 2 <= i) r ->
   2 <= length blk -> 2 <= length js ->
-  fights_of (mkCombat (0 :: 1 :: r) k (swap01 blk) tr) (swap01 js) =
-  swap01 (map rnA (fights_of (mkCombat (0 :: 1 :: r) k' blk tr') js)).
+  sfights (mkCombat (0 :: 1 :: r) k (swap01 blk) tr) (swap01 js) =
+  swap01 (map rnA (sfights (mkCombat (0 :: 1 :: r) k' blk tr') js)).
 Proof.
-  intros r blk js k k' tr tr' Hr Hb Hj. unfold fights_of. cbn [Model.atk Model.blk].
+  intros r blk js k k' tr tr' Hr Hb Hj. unfold sfights. cbn [Model.atk Model.blk].
   destruct blk as [| b0 [| b1 bl]]; cbn in Hb; try lia.
   destruct js as [| j0 [| j1 jl]]; cbn in Hj; try lia.
   cbn [swap01 combine map]. rewrite fights_rnA_big by exact Hr. reflexivity.
 Qed.
 
 Lemma fights_B : forall atk blk js k k' tr tr',
-  fights_of (mkCombat atk k (map (map ren_b) blk) tr) js = map rnB (fights_of (mkCombat atk k' blk tr') js).
+  sfights (mkCombat atk k (map (map ren_b) blk) tr) js = map rnB (sfights (mkCombat atk k' blk tr') js).
 Proof.
-  intros. unfold fights_of. cbn [Model.atk Model.blk].
+  intros. unfold sfights. cbn [Model.atk Model.blk].
   rewrite combine_map_r, combine_map_l. apply map_ext. intros [[i bs] j]. reflexivity.
 Qed.
 
 Lemma unblocked_A : forall a a' c c' fs fs',
   Permutation fs' (map rnA fs) -> (forall i, walker_power a' (swi i) = walker_power a i) ->
   c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
-  unblocked_of a' c' fs' = unblocked_of a c fs.
+  sunblocked a' c' fs' = sunblocked a c fs.
 Proof.
-  intros a a' c c' fs fs' Hp Hw E1 E2. unfold unblocked_of. rewrite E1, E2.
+  intros a a' c c' fs fs' Hp Hw E1 E2. unfold sunblocked. rewrite E1, E2.
   rewrite (list_sum_perm _ _ (Permutation_map _ Hp)), map_map. do 2 f_equal.
   apply map_ext. intros [[i bs] j]. cbn. destruct bs; [apply Hw | reflexivity].
 Qed.
 
 Lemma adead_A : forall a a' d fs fs',
   Permutation fs' (map rnA fs) -> (forall i, walker_power a' (swi i) = walker_power a i) ->
-  Permutation (adead_of a' d fs') (map swi (adead_of a d fs)).
+  Permutation (sadead a' d fs') (map swi (sadead a d fs)).
 Proof.
-  intros a a' d fs fs' Hp Hw. unfold adead_of.
+  intros a a' d fs fs' Hp Hw. unfold sadead.
   eapply perm_trans; [apply Permutation_map, filter_perm, Hp |].
   rewrite filter_map', !map_map.
   erewrite filter_ext; [erewrite map_ext; [reflexivity |] |].
@@ -930,34 +968,34 @@ Proof.
   - intros [[i bs] j]. cbn. destruct bs; [reflexivity |]. rewrite Hw. reflexivity.
 Qed.
 
-Lemma killed_A : forall fs fs', Permutation fs' (map rnA fs) -> Permutation (killed_of fs') (killed_of fs).
+Lemma killed_A : forall fs fs', Permutation fs' (map rnA fs) -> Permutation (skilled fs') (skilled fs).
 Proof.
-  intros fs fs' Hp. unfold killed_of.
+  intros fs fs' Hp. unfold skilled.
   eapply perm_trans; [apply Permutation_flat_map, Hp |].
   rewrite flat_map_map'. erewrite flat_map_ext; [reflexivity |]. intros [[i bs] j]. reflexivity.
 Qed.
 
 Lemma unblocked_B : forall a c c' fs,
   c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
-  unblocked_of a c' (map rnB fs) = unblocked_of a c fs.
+  sunblocked a c' (map rnB fs) = sunblocked a c fs.
 Proof.
-  intros a c c' fs E1 E2. unfold unblocked_of. rewrite E1, E2, map_map. do 2 f_equal.
+  intros a c c' fs E1 E2. unfold sunblocked. rewrite E1, E2, map_map. do 2 f_equal.
   apply map_ext. intros [[i bs] j]. cbn. destruct bs; reflexivity.
 Qed.
 
 Lemma adead_B : forall a d d' fs,
   (forall x, blocker_toughness d' (ren_b x) = blocker_toughness d x) ->
-  adead_of a d' (map rnB fs) = adead_of a d fs.
+  sadead a d' (map rnB fs) = sadead a d fs.
 Proof.
-  intros a d d' fs Ht. unfold adead_of. induction fs as [| [[i bs] j] fs IH]; [reflexivity |].
+  intros a d d' fs Ht. unfold sadead. induction fs as [| [[i bs] j] fs IH]; [reflexivity |].
   cbn [map filter rnB fst snd]. destruct bs as [| x bs]; [exact IH |].
   cbn [map]. rewrite Ht, map_map, (map_ext _ _ Ht).
   destruct (_ <=? _); cbn [map]; [f_equal |]; exact IH.
 Qed.
 
-Lemma killed_B : forall fs, killed_of (map rnB fs) = map ren_b (killed_of fs).
+Lemma killed_B : forall fs, skilled (map rnB fs) = map ren_b (skilled fs).
 Proof.
-  intros fs. unfold killed_of.
+  intros fs. unfold skilled.
   induction fs as [| [[i bs] j] fs IH]; [reflexivity |]. cbn [map flat_map rnB fst snd].
   rewrite IH, map_app, firstn_map. reflexivity.
 Qed.
@@ -980,11 +1018,11 @@ Ltac fin_damage :=
 
 Lemma damage_A : forall ft a b c c' js js', 2 <= length a.(bf) ->
   c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
-  Permutation (fights_of c' js') (map rnA (fights_of c js)) ->
-  Sym (damage_alt js (mkState PA ft a b c ChooseDamage)) (damage_alt js' (mkState PA ft (sw_side a) b c' ChooseDamage)).
+  Permutation (sfights c' js') (map rnA (sfights c js)) ->
+  Sym (sdamage js (mkState PA ft a b c ChooseDamage)) (sdamage js' (mkState PA ft (sw_side a) b c' ChooseDamage)).
 Proof.
   intros ft a b c c' js js' Hlen E1 E2 Hp.
-  unfold damage_alt, defender. cbn [get_side opp Model.active Model.sideA Model.sideB Model.cmb]. cbv zeta.
+  unfold sdamage, defender. cbn [get_side opp Model.active Model.sideA Model.sideB Model.cmb]. cbv zeta.
   assert (Hw : forall i, walker_power (sw_side a) (swi i) = walker_power a i) by (intros; apply wp_sw'; exact Hlen).
   rewrite (unblocked_A a (sw_side a) c c' _ _ Hp Hw E1 E2).
   pose proof (killed_A _ _ Hp) as Hk.
@@ -993,8 +1031,8 @@ Proof.
   rewrite (bury_perm _ _ _ (adead_A a (sw_side a) b _ _ Hp Hw)).
   rewrite thop_t_sw, set_thop_t_sw.
   assert (Hl : 2 <= length (set_thop_t (thop_t a - trades c) a).(bf)) by (destruct a; exact Hlen).
-  destruct (bury_swap (adead_of a b (fights_of c js)) _ Hl) as [H1 H2].
-  destruct (dies01 (adead_of a b (fights_of c js))) eqn:Ed.
+  destruct (bury_swap (sadead a b (sfights c js)) _ Hl) as [H1 H2].
+  destruct (dies01 (sadead a b (sfights c js))) eqn:Ed.
   - rewrite (H1 eq_refl). fin_damage. destruct (_ <=? _); left; reflexivity.
   - destruct (H2 eq_refl) as [E Hl']. rewrite E. fin_damage.
     destruct (_ <=? _); (apply SymX_mk; [exact Hl' | reflexivity | apply cmb_rel_none]).
@@ -1003,18 +1041,18 @@ Qed.
 Lemma damage_B : forall ft a b c c' js, 2 <= length a.(bf) ->
   c'.(atk) = c.(atk) -> c'.(blk) = map (map ren_b) c.(blk) ->
   c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
-  Sym (damage_alt js (mkState PB ft a b c ChooseDamage)) (damage_alt js (mkState PB ft (sw_side a) b c' ChooseDamage)).
+  Sym (sdamage js (mkState PB ft a b c ChooseDamage)) (sdamage js (mkState PB ft (sw_side a) b c' ChooseDamage)).
 Proof.
   intros ft a b [atk k blk tr] [atk' k' blk' tr'] js Hlen Ea Eb E1 E2.
   cbn [Model.atk Model.blk Model.atk_thop Model.trades] in Ea, Eb, E1, E2. subst atk' blk' k' tr'.
-  unfold damage_alt, defender. cbn [get_side opp Model.active Model.sideA Model.sideB Model.cmb]. cbv zeta.
+  unfold sdamage, defender. cbn [get_side opp Model.active Model.sideA Model.sideB Model.cmb]. cbv zeta.
   rewrite (fights_B atk blk js k k tr tr).
   rewrite (unblocked_B b (mkCombat atk k blk tr)) by reflexivity.
   rewrite (adead_B b a (sw_side a)) by (intros; apply tough_sw; exact Hlen).
   rewrite killed_B, ddead_B, count_B.
   rewrite thop_u_sw, set_thop_u_sw.
   assert (Hl : 2 <= length (set_thop_u (thop_u a - (count_occ blocker_eq_dec
-                  (killed_of (fights_of (mkCombat atk k blk tr) js)) BT + trades (mkCombat atk k blk tr))) a).(bf))
+                  (skilled (sfights (mkCombat atk k blk tr) js)) BT + trades (mkCombat atk k blk tr))) a).(bf))
     by (destruct a; exact Hlen).
   match goal with |- context [bury (map swi ?dd) (sw_side ?sd)] =>
     destruct (bury_swap dd sd Hl) as [H1 H2]; destruct (dies01 dd) eqn:Ed end.
@@ -1035,7 +1073,7 @@ Proof.
   unfold moves, damage_moves, defender in *.
   cbn [get_side opp Model.active Model.sideA Model.sideB Model.pend Model.cmb Model.atk Model.blk] in *.
   apply in_map_iff in Hin as (js0 & E & Hjs). injection E as ->.
-  cbn [step Model.pend]. rewrite !damage_alt_eq.
+  cbn [step Model.pend]. rewrite !sdamage_eq.
   destruct act; cbn [get_side opp Model.sideA Model.sideB Model.cmb Model.atk Model.blk] in *.
   - destruct Hc as [(-> & ->) | (r & -> & Hr & -> & Hl & ->)].
     + exists (Assign js). split.
@@ -1382,75 +1420,11 @@ Proof. intros s. unfold swapA. destruct (2 <=? _); reflexivity. Qed.
 Lemma sideB_swapA : forall s, (swapA s).(sideB) = s.(sideB).
 Proof. intros s. unfold swapA. destruct (2 <=? _); reflexivity. Qed.
 
-Lemma is_turn_start_swapA : forall s, is_turn_start (swapA s) = is_turn_start s.
-Proof. intros s. unfold is_turn_start. rewrite pend_swapA, active_swapA. reflexivity. Qed.
-
 Lemma Forall2_swap01 : forall {X Y} (P : X -> Y -> Prop) l l', Forall2 P l l' -> Forall2 P (swap01 l) (swap01 l').
 Proof.
   intros X Y P l l' H. destruct H as [| x y l l' Hxy H]; [constructor |].
   destruct H as [| x' y' l l' Hxy' H]; cbn; repeat constructor; assumption.
 Qed.
-
-(** *** [Checker] (B-safety and B-wins certificates) *)
-
-Lemma key_swapA : forall H tt s, Checker.key H tt (swapA s) = swapA (Checker.key H tt s).
-Proof.
-  intros H tt [act ft [] [] c pd]. unfold swapA, Checker.key, sw_side, set_bf, set_gy_w, set_life.
-  st_cbn. rewrite length_map. dle2; st_cbn; rewrite ?map_swap01; reflexivity.
-Qed.
-
-Lemma entry_swapA : forall s v, Checker.entry (swapA s) v = swapA (Checker.entry s v).
-Proof.
-  intros [act ft [] [] c pd] v. unfold swapA, Checker.entry, map_side, get_side, set_side, set_life.
-  st_cbn. dle2; reflexivity.
-Qed.
-
-Lemma R_swapA : forall H s t, Checker.R H s t -> Checker.R H (swapA s) (swapA t).
-Proof.
-  intros H [act ft a b c pd] [act' ft' a' b' c' pd'] HR.
-  pose proof HR as (E1 & E2 & E3 & E4 & Hn & HA & HB).
-  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *. subst act' ft' c' pd'.
-  pose proof HA as (a1 & a2 & a3 & a4 & a5 & a6 & a7 & a8 & a9 & a10 & a11 & a12 & a13).
-  unfold swapA. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
-  rewrite <- (Forall2_length a11). destruct (2 <=? length a.(bf)); [| exact HR].
-  unfold Checker.R. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
-  repeat (split; [reflexivity |]). split; [exact Hn |]. split; [| exact HB].
-  destruct a, a'; unfold sw_side, set_bf, Checker.sideA_rel in *. cbn in *.
-  repeat split; auto. apply Forall2_swap01. exact a11.
-Qed.
-
-(** A certificate state [s] that abstracts a real state [t] still does after
-    sorting, against [t] with its Walkers in the same order as [s]'s. *)
-Theorem R_normA : forall H s t, Checker.R H s t -> exists t', Sym t t' /\ Checker.R H (normA s) t'.
-Proof.
-  intros H s t HR. unfold normA. destruct (unsorted _).
-  - exists (swapA t). split; [apply Sym_swapA | apply R_swapA; exact HR].
-  - exists t. split; [left; reflexivity | exact HR].
-Qed.
-
-(** *** [CheckerA] (A-safety certificates) *)
-
-Lemma normA_swapA : forall Hb tt s, CheckerA.norm Hb tt (swapA s) = swapA (CheckerA.norm Hb tt s).
-Proof.
-  intros Hb tt [act ft [] [] c pd]. unfold swapA, CheckerA.norm, CheckerA.cut_a, sw_side, set_bf, set_thop_u, set_thop_t.
-  st_cbn. dle2; reflexivity.
-Qed.
-
-Lemma keyA_swapA : forall Hb tt s, CheckerA.key Hb tt (swapA s) = swapA (CheckerA.key Hb tt s).
-Proof.
-  intros Hb tt [act ft [] [] c pd]. unfold swapA, CheckerA.key, CheckerA.norm, CheckerA.cut_a, sw_side,
-    set_bf, set_thop_u, set_thop_t, set_gy_w, set_life.
-  st_cbn. dle2; reflexivity.
-Qed.
-
-Lemma entryA_swapA : forall m s, CheckerA.entry m (swapA s) = swapA (CheckerA.entry m s).
-Proof.
-  intros m [act ft [] [] c pd]. unfold swapA, CheckerA.entry, map_side, get_side, set_side, set_life.
-  st_cbn. dle2; reflexivity.
-Qed.
-
-Lemma bigs_swap01 : forall K l, CheckerA.bigs K (swap01 l) = CheckerA.bigs K l.
-Proof. intros K [| a [| b r]]; unfold CheckerA.bigs; cbn; try reflexivity. destruct (_ =? K), (_ =? K); reflexivity. Qed.
 
 Lemma Forall_swap01 : forall {X} (P : X -> Prop) l, Forall P (swap01 l) <-> Forall P l.
 Proof.
@@ -1461,30 +1435,3 @@ Qed.
 
 Lemma swi_inj : forall i j, swi i = swi j -> i = j.
 Proof. intros i j E. rewrite <- (swi_swi i), <- (swi_swi j), E. reflexivity. Qed.
-
-Lemma RA_swapA : forall K Hb n s t, CheckerA.RA K Hb n s t -> CheckerA.RA K Hb n (swapA s) (swapA t).
-Proof.
-  intros K Hb n [act ft a b c pd] [act' ft' a' b' c' pd'] HR.
-  pose proof HR as (E1 & E2 & E3 & E4 & Hn & HA & HB & Hd).
-  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *. subst act' ft' c' pd'.
-  pose proof HA as (a1 & a2 & a3 & a4 & a5 & a6 & a7 & a8 & a9 & a10 & a11 & a12 & a13 & a14 & a15).
-  unfold swapA. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
-  rewrite <- (Forall2_length a11). destruct (2 <=? length a.(bf)); [| exact HR].
-  unfold CheckerA.RA. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
-  repeat (split; [reflexivity |]). split; [exact Hn |]. split; [| split; [exact HB |]].
-  - destruct a, a'; unfold sw_side, set_bf, CheckerA.sideA_rel in *. cbn in *.
-    repeat split; auto.
-    + apply Forall2_swap01. exact a11.
-    + intros Hf. apply a12. apply Forall_swap01. exact Hf.
-    + unfold CheckerA.bigs in *. rewrite (Permutation_length (filter_perm _ _ _ (perm_swap01 _))). exact a13.
-  - destruct act; cbn; [| exact Hd].
-    apply FinFun.Injective_map_NoDup; [exact swi_inj | exact Hd].
-Qed.
-
-Theorem RA_normA : forall K Hb n s t, CheckerA.RA K Hb n s t ->
-  exists t', Sym t t' /\ CheckerA.RA K Hb n (normA s) t'.
-Proof.
-  intros K Hb n s t HR. unfold normA. destruct (unsorted _).
-  - exists (swapA t). split; [apply Sym_swapA | apply RA_swapA; exact HR].
-  - exists t. split; [left; reflexivity | exact HR].
-Qed.
