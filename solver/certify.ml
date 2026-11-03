@@ -320,6 +320,27 @@ let dec (k1, k2) =
   { active = p; first_turn = bit k1 54; sideA = dec_side k1; sideB = dec_side k2; cmb = no_combat;
     pend = Window (Upkeep, p, false) }
 
+(* TCB_SYM=1 (experiment): every turn-start lookup is answered with A's
+   battlefield Walkers in a canonical order, ascending by their packed
+   7-bit code ([enc_walker]): a Rocq lookup could swap the two Walker
+   fields of the packed key when the first is greater. Needs the fact
+   that swapping A's Walkers preserves the claims (not proved here). *)
+let sym = Sys.getenv_opt "TCB_SYM" = Some "1"
+
+let canon s =
+  if not sym then s
+  else
+    match s.sideA.bf with
+    | [ a; b ] when enc_walker a > enc_walker b -> { s with sideA = { s.sideA with bf = [ b; a ] } }
+    | _ -> s
+
+(* Counters of the emulated Rocq lookups (experiment, TCB_FEAT): lookups
+   (each [Packed.start]), binary-search steps, run elements scanned. *)
+let c_lk = ref 0
+let c_bs = ref 0
+let c_scan = ref 0
+let c_below = ref 0
+
 (* ** The checks Rocq runs on each entry, and their costs
 
    Packed.v checks an entry with [MemoB.check_mb] (safety) or
@@ -340,18 +361,49 @@ let costs ~dir n (ok : int ref -> int -> bool) =
   Unix.ftruncate fd (8 * max 1 n);
   let cost = Bigarray.array1_of_genarray (Unix.map_file fd Bigarray.int Bigarray.c_layout true [| max 1 n |]) in
   Unix.close fd;
+  (* TCB_FEAT=FILE (experiment): each entry's features, for a model of
+     Rocq's cost: cost, packed starts (lookups and belows), binary-search
+     steps, run elements scanned, belows *)
+  let feat = Sys.getenv_opt "TCB_FEAT" in
+  let nf = 5 in
+  let fpath = path ^ "-feat" in
+  let fa =
+    match feat with
+    | None -> None
+    | Some _ ->
+      let fd = Unix.openfile fpath [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
+      Unix.ftruncate fd (8 * nf * max 1 n);
+      let a = Bigarray.array1_of_genarray (Unix.map_file fd Bigarray.int Bigarray.c_layout true [| nf * max 1 n |]) in
+      Unix.close fd;
+      Some a
+  in
   let w = Par.workers n 1000 in
   ignore
     (Par.map ~dir w (fun k ->
          let a, b = Par.chunk n w k in
          let c = ref 0 in
          for j = a to b - 1 do
-           c := 0;
-           cost.{j} <- (if ok c j then !c else -1)
+           c := 0; c_lk := 0; c_bs := 0; c_scan := 0; c_below := 0;
+           cost.{j} <- (if ok c j then !c else -1);
+           match fa with
+           | Some fa ->
+             fa.{nf * j} <- cost.{j}; fa.{(nf * j) + 1} <- !c_lk; fa.{(nf * j) + 2} <- !c_bs;
+             fa.{(nf * j) + 3} <- !c_scan; fa.{(nf * j) + 4} <- !c_below
+           | None -> ()
          done;
          0));
   let res = Array.init n (fun j -> cost.{j}) in
   Sys.remove path;
+  (match feat, fa with
+   | Some f, Some fa ->
+     let oc = open_out f in
+     for j = 0 to n - 1 do
+       Printf.fprintf oc "%d %d %d %d %d %d\n" j fa.{nf * j} fa.{(nf * j) + 1} fa.{(nf * j) + 2} fa.{(nf * j) + 3}
+         fa.{(nf * j) + 4}
+     done;
+     close_out oc;
+     Sys.remove fpath
+   | _ -> ());
   let bad = List.filter (fun j -> res.(j) < 0) (List.init n Fun.id) in
   (res, bad)
 
@@ -451,17 +503,19 @@ let packed_cmp (a1, a2) (b1, b2) = compare (hi a1, a2, alife a1) (hi b1, b2, ali
 
 (* Packed.start *)
 let packed_start k1s k2s k1 k2 =
+  incr c_lk;
   let h = hi k1 in
   let rec go f a b =
     if f = 0 || a >= b then a
     else
       let m = (a + b) / 2 in
+      incr c_bs;
       if hi k1s.(m) < h || (hi k1s.(m) = h && k2s.(m) < k2) then go (f - 1) (m + 1) b else go (f - 1) a m
   in
   go 32 0 (Array.length k1s)
 
 (* Packed.in_run *)
-let in_run k1s k2s j k1 k2 = j < Array.length k1s && hi k1s.(j) = hi k1 && k2s.(j) = k2
+let in_run k1s k2s j k1 k2 = incr c_scan; j < Array.length k1s && hi k1s.(j) = hi k1 && k2s.(j) = k2
 
 (* Mono.bump PA, and the model's truncated subtraction *)
 let bump_a d s = { s with sideA = { s.sideA with life = s.sideA.life + d } }
@@ -469,6 +523,7 @@ let nsub a b = max 0 (a - b)
 
 (* Accept record [j] for [s]: it is [s] with A's life raised. *)
 let accept k1s k2s j s =
+  let s = canon s in
   let e = dec (k1s.(j), k2s.(j)) in
   e = bump_a (nsub e.sideA.life s.sideA.life) s
 
@@ -489,14 +544,18 @@ let win_best k1s k2s rv ok k1 k2 =
 let rank_of rv j = (rv.(j) lsr 6) land 0xffff
 
 (* Packed.lookup and Packed.below *)
+let dep_log = ref []
+
 let win_lookup k1s k2s rv lookups s r =
   incr lookups;
-  let k1, k2 = enc s in
+  let k1, k2 = enc (canon s) in
   let j = win_best k1s k2s rv (fun x -> x = r) k1 k2 in
-  if j < Array.length k1s && rank_of rv j = r && accept k1s k2s j s then Some (rv.(j) land 63) else None
+  if j < Array.length k1s && rank_of rv j = r && accept k1s k2s j s then (dep_log := j :: !dep_log; Some (rv.(j) land 63))
+  else None
 
 let win_below k1s k2s rv s r =
-  let k1, k2 = enc s in
+  incr c_below;
+  let k1, k2 = enc (canon s) in
   let j = win_best k1s k2s rv (fun x -> x < r) k1 k2 in
   if j < Array.length k1s then Some (rank_of rv j) else None
 
@@ -504,7 +563,7 @@ let win_below k1s k2s rv s r =
    at [s]'s A life or more. *)
 let safe_lookup k1s k2s vs lookups s =
   incr lookups;
-  let k1, k2 = enc s in
+  let k1, k2 = enc (canon s) in
   let n = Array.length k1s in
   let rec go f j best =
     if f = 0 then best
@@ -521,6 +580,60 @@ let safe_lookup k1s k2s vs lookups s =
 let record_check ~h ~ott ~tt ~fuel k1s k2s rv c j =
   fst (check_mw h ott tt (memo_hash c) (win_lookup k1s k2s rv c) (win_below k1s k2s rv) (rank_of rv j) fuel true
          (entry (dec (k1s.(j), k2s.(j))) (rv.(j) land 63)) MLeaf)
+
+(* TCB_RERANK=1 (experiment): the smallest ranks the records' checks allow.
+   Record [j]'s check, run as Rocq does, answers its turn starts with
+   records of lower rank; giving each record 1 + the greatest new rank of
+   those (0 if none) keeps every one of them below it, so each turn start
+   still finds a record of lower rank needing no more life (perhaps
+   another, needing less), and every check still passes (Rocq checks them
+   all again anyway). Ranks are unary in Rocq ([rank_of]), so smaller ones
+   are cheaper. Returns the new RV column (same order of records). *)
+let rerank ~dir ~h ~ott ~tt ~fuel k1s k2s rv =
+  let n = Array.length k1s in
+  let w = Par.workers n 1000 in
+  let pid = Unix.getpid () in
+  let name k = Filename.concat dir (Printf.sprintf "rerank-%d-%d" pid k) in
+  ignore
+    (Par.map ~dir w (fun k ->
+         let a, b = Par.chunk n w k in
+         let oc = open_out (name k) in
+         for j = a to b - 1 do
+           dep_log := [];
+           let c = ref 0 in
+           ignore
+             (fst (check_mw h ott tt (memo_hash c) (win_lookup k1s k2s rv c) (win_below k1s k2s rv) (rank_of rv j) fuel
+                     true (entry (dec (k1s.(j), k2s.(j))) (rv.(j) land 63)) MLeaf));
+           output_string oc (string_of_int j);
+           List.iter (fun d -> output_char oc ' '; output_string oc (string_of_int d)) (List.sort_uniq compare !dep_log);
+           output_char oc '\n'
+         done;
+         close_out oc;
+         0));
+  let deps = Array.make n [] in
+  for k = 0 to w - 1 do
+    let ic = open_in (name k) in
+    (try
+       while true do
+         match List.map int_of_string (String.split_on_char ' ' (input_line ic)) with
+         | j :: ds -> deps.(j) <- ds
+         | [] -> ()
+       done
+     with End_of_file -> ());
+    close_in ic;
+    Sys.remove (name k)
+  done;
+  (* old ranks strictly decrease along dependencies: compute heights in old-rank order *)
+  let order = Array.init n Fun.id in
+  Array.sort (fun a b -> compare (rank_of rv a) (rank_of rv b)) order;
+  let height = Array.make n (-1) in
+  Array.iter (fun j ->
+      height.(j) <- List.fold_left (fun acc d ->
+          if rank_of rv d >= rank_of rv j then failwith "rerank: a dependency of no lower rank";
+          max acc (height.(d) + 1)) 0 deps.(j)) order;
+  let maxh = Array.fold_left max 0 height in
+  Printf.printf "rerank: %d ranks become %d\n%!" (1 + Array.fold_left (fun acc j -> max acc (rank_of rv j)) 0 order) (maxh + 1);
+  Array.init n (fun j -> (height.(j) lsl 6) lor (rv.(j) land 63))
 
 let entry_check ~h ~ott ~tt ~fuel k1s k2s vs c j =
   fst (check_mb h ott tt (memo_hash c) (safe_lookup k1s k2s vs c) fuel true
@@ -657,7 +770,7 @@ let safe_closure t lk starter prev =
     let s, v = Queue.pop queue in
     let e = entry s v in
     let leaf s' =
-      let q = key t.h t.tt s' and x = s'.sideB.life in
+      let q = canon (key t.h t.tt s') and x = s'.sideB.life in
       match covered q x with
       | Some _ -> 0.
       | None -> (match rep q with Some (k, v') when v' <= x -> round_weight prev (enc k) | _ -> infinity)
@@ -666,7 +779,7 @@ let safe_closure t lk starter prev =
     if c = infinity then incr bad
     else
       walk_turn ~h:t.h ~ott:t.ott pick (fun s' ->
-          let q = key t.h t.tt s' and x = s'.sideB.life in
+          let q = canon (key t.h t.tt s') and x = s'.sideB.life in
           match covered q x with
           | Some e -> use e
           | None ->
@@ -706,6 +819,10 @@ let certify_safe_export dir starter ~outdir ~chunks ~fuel:f =
   in
   let k1s = Array.map (fun (k1, _, _) -> k1) recs and k2s = Array.map (fun (_, k2, _) -> k2) recs in
   let vs = Array.map (fun (_, _, v) -> if v >= 64 then failwith "export-safe: value too big" else v) recs in
+  (* as in the win export: the closure's tables go before the workers fork *)
+  Hashtbl.reset used;
+  res := (Hashtbl.create 1, Hashtbl.create 1, 0);
+  Gc.compact ();
   let cost, bad = costs ~dir:outdir n (entry_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s vs) in
   let v0 = match safe_lookup k1s k2s vs (ref 0) (key t.h t.tt (init starter)) with Some v -> v | None -> 99 in
   Printf.printf "pass 2 (as in Rocq, fuel %d): %d of %d failed, cost %d (%.1fs); opening needs %d life\n%!" f
@@ -791,7 +908,7 @@ let certify_win_export dir starter ~outdir ~chunks ~fuel:f =
         List.find_opt (fun (_, _, v) -> v <= x) cs
       in
       let leaf s' =
-        let q = key t.h t.tt s' and x = s'.sideB.life in
+        let q = canon (key t.h t.tt s') and x = s'.sideB.life in
         match covered q r x with
         | Some _ -> 0.
         | None -> (match rep q r x with Some (ql, rk, _) -> round_weight prev (enc ql, rk) | None -> infinity)
@@ -800,7 +917,7 @@ let certify_win_export dir starter ~outdir ~chunks ~fuel:f =
       if c = infinity then incr bad
       else
         walk_turn ~h:t.h ~ott:t.ott pick (fun s' ->
-            let q = key t.h t.tt s' and x = s'.sideB.life in
+            let q = canon (key t.h t.tt s') and x = s'.sideB.life in
             match covered q r x with
             | Some er -> use er
             | None ->
@@ -851,6 +968,16 @@ let certify_win_export dir starter ~outdir ~chunks ~fuel:f =
   Hashtbl.reset used;
   res := (Hashtbl.create 1, Hashtbl.create 1, 0);
   Gc.compact ();
+  let rv, rk0 =
+    if Sys.getenv_opt "TCB_RERANK" <> Some "1" then (rv, rk0)
+    else begin
+      let e0 = enc k0 in
+      let j0 = ref (-1) in
+      Array.iteri (fun j k1 -> if (k1, k2s.(j)) = e0 && rank_of rv j = rk0 then j0 := j) k1s;
+      let rv' = rerank ~dir:outdir ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s rv in
+      (rv', rank_of rv' !j0)
+    end
+  in
   let cost, bad = costs ~dir:outdir n (record_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s rv) in
   let lv0 = win_lookup k1s k2s rv (ref 0) k0 rk0 in
   Printf.printf "pass 2 (as in Rocq, fuel %d): %d of %d records fail, cost %d; opening: rank %d, value %s (%.1fs)\n%!"
@@ -1246,6 +1373,14 @@ let rechunk dir chunks =
   let dummy = ref 0 in
   if win then begin
     let rv = arr "RV" in
+    let rerank_on = Sys.getenv_opt "TCB_RERANK" = Some "1" in
+    (* the opening's record, to find again after reranking *)
+    let s00 = init PB in
+    let e00 = enc (key h tt s00) in
+    let j00 = ref (-1) in
+    Array.iteri (fun j k1 -> if (k1, k2s.(j)) = e00 && rv.(j) land 63 <= s00.sideB.life
+                             && (!j00 < 0 || rank_of rv j < rank_of rv !j00) then j00 := j) k1s;
+    let rv = if rerank_on then rerank ~dir ~h ~ott ~tt ~fuel k1s k2s rv else rv in
     let cost, bad = costs ~dir n (record_check ~h ~ott ~tt ~fuel k1s k2s rv) in
     (* the opening's lowest-rank record on at most 20 life *)
     let s0 = init PB in
@@ -1257,6 +1392,13 @@ let rechunk dir chunks =
     Printf.printf "%d of %d records fail, cost %d; opening: rank %d, value %d (%.1fs)\n%!" (List.length bad) n
       (Array.fold_left ( + ) 0 cost) !r0 v0 (Unix.gettimeofday () -. t0);
     if bad <> [] || v0 > 20 then failwith "rechunk: not writing a failing certificate";
+    if rerank_on then begin
+      ignore !j00;
+      write_data ~outdir:dir ~n
+        ~defs:(Printf.sprintf "Definition H := %d.\nDefinition ott := %d.\nDefinition tt := %d.\nDefinition fuel := %d.\n"
+                 h ott tt fuel)
+        ~arrays:[ ("K1", fun j -> k1s.(j)); ("K2", fun j -> k2s.(j)); ("RV", fun j -> rv.(j)) ]
+    end;
     write_chunks ~outdir:dir ~bounds:(balance cost chunks) ~ok:"record_ok H ott tt fuel K1 K2 RV" ~final:"BFirst"
       ~claim:"b_first_b_wins" ~apply:(Printf.sprintf "table_wins H ott tt fuel K1 K2 RV bounds %d %d" !r0 v0)
   end else begin

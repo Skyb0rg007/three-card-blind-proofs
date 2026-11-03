@@ -461,6 +461,11 @@ let read_lines path f =
   close_in ic;
   Sys.remove path
 
+let read_lines_keep path f =
+  let ic = open_in path in
+  (try while true do f (input_line ic) done with End_of_file -> ());
+  close_in ic
+
 let write_file path s =
   let oc = open_out (path ^ ".tmp") in
   output_string oc s;
@@ -474,6 +479,7 @@ let write_file path s =
    the lookup takes if it is above it. Lines almost always grow with A's
    life ([Shrink.amono]), so this is almost always the highest line. *)
 let packed_choice find q =
+  let q = Certify.canon q in
   let best = ref None in
   for l = 1 to q.sideA.life do
     let e = enc { q with sideA = { q.sideA with life = l } } in
@@ -517,6 +523,28 @@ let run dir starter outfile p =
      A's moves are chosen to collect as few as possible ([achoose]).
      TCB_DOM=0 collects the key itself. *)
   let dom = Sys.getenv_opt "TCB_DOM" <> Some "0" in
+  (* TCB_PREV=ENTRIES (experiment, the B exports' TCB_ROUNDS): a new entry
+     weighs 1 / (1 + its uses) if a previous run collected it (with its
+     uses from ENTRIES.uses, if there), 4 otherwise. Each run writes its
+     entries' uses to OUT.uses. *)
+  let prev =
+    match Sys.getenv_opt "TCB_PREV" with
+    | None -> None
+    | Some f ->
+      let t = Hashtbl.create 1_000_000 in
+      read_lines_keep f (fun l ->
+          if l <> "" && l.[0] <> '#' then Scanf.sscanf l "%d %d" (fun k1 k2 -> Hashtbl.replace t (k1, k2) 0));
+      if Sys.file_exists (f ^ ".uses") then
+        read_lines_keep (f ^ ".uses") (fun l -> Scanf.sscanf l "%d %d %d" (fun k1 k2 u -> Hashtbl.replace t (k1, k2) u));
+      Printf.printf "previous run: %d entries\n%!" (Hashtbl.length t);
+      Some t
+  in
+  let weight r =
+    match prev with
+    | None -> 1.
+    | Some t -> (match Hashtbl.find_opt t (enc r) with Some u -> 1. /. (1. +. float u) | None -> 4.)
+  in
+  let uses = Hashtbl.create 1_000_000 in
   let choose = true in
   let dom_rep s =
     match lk s with
@@ -575,6 +603,7 @@ let run dir starter outfile p =
                 end
               in
               let bad = ref 0 in
+              let wuses = Hashtbl.create 1024 in
               for j = a to b - 1 do
                 let s = dec fr.(j) and c, b = vline (Option.get (Tbl.find used fr.(j))) in
                 (* per entry: each key's representative and its line, and the
@@ -610,10 +639,10 @@ let run dir starter outfile p =
                     !res
                 in
                 let leaf s' c' b' lo' =
-                  let q = a_key p.hb p.tt s' in
+                  let q = Certify.canon (a_key p.hb p.tt s') in
                   match known_of q with
                   | Some ln, _ when meets p s' c' b' lo' ln -> 0.
-                  | _ -> if cand s' q c' b' lo' <> None then 1. else infinity
+                  | _ -> (match cand s' q c' b' lo' with Some (r, _) -> weight r | None -> infinity)
                 in
                 let e = a_entry p.m s in
                 let r, pick = if choose then achoose p leaf e c b else (0., H.create 1) in
@@ -623,15 +652,17 @@ let run dir starter outfile p =
                 end
                 else
                   awalk p pick (fun s' c' b' lo' ->
-                      let q = a_key p.hb p.tt s' in
+                      let q = Certify.canon (a_key p.hb p.tt s') in
+                      let use r = let e = enc r in Hashtbl.replace wuses e (1 + Option.value (Hashtbl.find_opt wuses e) ~default:0) in
                       match known_of q with
-                      | Some ln, _ when meets p s' c' b' lo' ln -> ()
+                      | Some ln, l when meets p s' c' b' lo' ln -> use { q with sideA = { q.sideA with life = l } }
                       | _ ->
                         match cand s' q c' b' lo' with
-                        | Some (r, ln) -> add r ln; S.reset known
+                        | Some (r, ln) -> add r ln; use r; S.reset known
                         | None -> Printf.fprintf oc "! %d %d: a turn start not covered\n" (fst fr.(j)) (snd fr.(j)))
                     e c b
               done;
+              Hashtbl.iter (fun (k1, k2) u -> Printf.fprintf oc "u %d %d %d\n" k1 k2 u) wuses;
               close_out oc;
               !bad)
         in
@@ -640,6 +671,9 @@ let run dir starter outfile p =
           read_lines (name k) (fun line ->
               match String.split_on_char ' ' line with
               | [ "+"; k1; k2; v ] -> if Tbl.add used (int_of_string k1, int_of_string k2) (int_of_string v) then incr nnew
+              | [ "u"; k1; k2; u ] ->
+                let e = (int_of_string k1, int_of_string k2) in
+                Hashtbl.replace uses e (int_of_string u + Option.value (Hashtbl.find_opt uses e) ~default:0)
               | [ "-"; k1; k2 ] ->
                 let e = (int_of_string k1, int_of_string k2) in
                 let c, b = vline (Option.get (Tbl.find used e)) in
@@ -733,6 +767,9 @@ let run dir starter outfile p =
   then failwith "certify-a: sort failed";
   Sys.remove raw;
   Printf.printf "wrote %d entries to %s (c in %d..%d, b up to %d)\n" n outfile !minc !maxc !maxb;
+  (let oc = open_out (outfile ^ ".uses") in
+   Hashtbl.iter (fun (k1, k2) u -> if Tbl.mem used (k1, k2) then Printf.fprintf oc "%d %d %d\n" k1 k2 u) uses;
+   close_out oc);
   if !fails = 0 && b0 = 0 && c0 >= s0.sideB.life then begin
     print_endline "certified: A is safe from the opening";
     List.iter (fun s -> Disk.remove (st ^ "-used" ^ s)) [ ".a"; ".b"; ".v" ];
@@ -898,6 +935,7 @@ let export entries starter ~outdir ~chunks p =
   (* PackedA.alookup: in the run of [s]'s position, the last entry at
      [s]'s A life or less *)
   let lk0 s =
+    let s = Certify.canon s in
     let k1, k2 = enc s in
     let rec go f j best =
       if f = 0 then best
@@ -951,6 +989,18 @@ let export entries starter ~outdir ~chunks p =
     Unix.close fd;
     a
   in
+  (* TCB_FEAT=FILE (experiment): each entry's nodes, lookups, binary-search
+     steps and run elements scanned *)
+  let feat = Sys.getenv_opt "TCB_FEAT" in
+  let featf = costf ^ "-feat" in
+  let fa =
+    let fd = Unix.openfile featf [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
+    let m = if feat = None then 1 else 4 * max 1 n in
+    Unix.ftruncate fd (8 * m);
+    let a = Bigarray.array1_of_genarray (Unix.map_file fd Bigarray.int Bigarray.c_layout true [| m |]) in
+    Unix.close fd;
+    a
+  in
   let slices = if rhi - rlo < n then 1 else 32 in
   let bad = ref 0 in
   for sl = 0 to slices - 1 do
@@ -972,9 +1022,15 @@ let export entries starter ~outdir ~chunks p =
               if check_m probe s p.m c b then if !minlife = max_int then 1 else max 1 (p.m - !minlife + 1) else p.m in
             lookups := 0;
             nodes := 0;
+            Certify.c_bs := 0;
+            Certify.c_scan := 0;
             if not (check_m counting s life c b) then begin
               incr nb;
               Printf.fprintf oc "%d %d %d %d\n" k1s.(j) k2s.(j) c b
+            end;
+            if feat <> None then begin
+              fa.{4 * j} <- !nodes; fa.{(4 * j) + 1} <- !lookups; fa.{(4 * j) + 2} <- !Certify.c_bs;
+              fa.{(4 * j) + 3} <- !Certify.c_scan
             end;
             cost.{j} <- !nodes + !lookups;
             packed.{j} <- pack_line (c, b) life
@@ -1011,6 +1067,16 @@ let export entries starter ~outdir ~chunks p =
     done;
     List.rev (if List.hd !bs = n then !bs else n :: !bs)
   in
+  (match feat with
+   | Some f ->
+     let oc = open_out f in
+     for j = rlo to rhi - 1 do
+       Printf.fprintf oc "%d %d %d %d %d %d\n" j fa.{4 * j} fa.{(4 * j) + 1} fa.{(4 * j) + 2} fa.{(4 * j) + 3}
+         (packed.{j} lsr 20)
+     done;
+     close_out oc
+   | None -> ());
+  Sys.remove featf;
   Sys.remove costf;
   Sys.remove packf;
   if !bad > 0 || c0 < 20 then failwith "certify-a-export: not writing a failing certificate";
