@@ -422,3 +422,304 @@ Proof.
   all: exfalso; destruct Hatk as [H1 H2];
     first [specialize (H1 eq_refl) | specialize (H2 eq_refl)]; discriminate.
 Qed.
+
+Ltac in_split' :=
+  repeat match goal with
+  | Hin : In _ (_ :: _) |- _ => destruct Hin as [Hin | Hin]; [try discriminate |]
+  | Hin : In _ (_ ++ _) |- _ => apply in_app_iff in Hin as [Hin | Hin]
+  | Hin : In _ (map _ _) |- _ => let x := fresh in apply in_map_iff in Hin as [x [Hin _]]; try discriminate
+  | Hin : In _ [] |- _ => destruct Hin
+  | Hin : In _ (if ?b then _ else _) |- _ => destruct b
+  end.
+
+(** *** Priority windows *)
+
+Definition mv_window (m : move) : move := match m with Pump i => Pump (swi i) | _ => m end.
+
+Definition mv_win (p : player) (m : move) : move := match p with PA => mv_window m | PB => m end.
+
+Lemma sym_window_moves : forall act ft a b c c' st p passed m, 2 <= length a.(bf) ->
+  In m (window_moves st p (mkState act ft a b c (Window st p passed))) ->
+  In (mv_win p m) (window_moves st p (mkState act ft (sw_side a) b c' (Window st p passed))).
+Proof.
+  intros act ft a b c c' st [] passed m Hlen Hin; unfold window_moves in *;
+    cbn [get_side Model.sideA Model.sideB Model.active mv_win] in *; [| exact Hin].
+  rewrite !can_pay_sw. destruct a as [la ca pa hwa hea bfa ea tua tta liba gya]. sw_cbn.
+  destruct Hin as [<- | Hin]; [left; reflexivity |]. right.
+  apply in_app_iff in Hin as [Hin | Hin].
+  - destruct (can_pay 1 _); [| destruct Hin]. apply in_map_iff in Hin as (i & <- & Hi).
+    cbn [mv_window]. apply in_app_iff. left. apply in_map. apply in_indices_swap; assumption.
+  - assert (E : mv_window m = m) by (destruct m; try reflexivity; exfalso; in_split').
+    rewrite E. apply in_app_iff. right. exact Hin.
+Qed.
+
+Lemma sym_window_step : forall act ft a b c c' st p passed m, 2 <= length a.(bf) ->
+  cmb_rel act (Window st p passed) c c' ->
+  Sym (step (mkState act ft a b c (Window st p passed)) m)
+      (step (mkState act ft (sw_side a) b c' (Window st p passed)) (mv_win p m)).
+Proof.
+  intros act ft a b c c' st p passed m Hlen Hc.
+  assert (Hm : forall m, match m with Pass | Pump _ | ActElixir | CastWalker _ | CastElixir => False | _ => True end ->
+     Sym (step (mkState act ft a b c (Window st p passed)) m)
+         (step (mkState act ft (sw_side a) b c' (Window st p passed)) m)).
+  { intros [] Hn; try destruct Hn; apply SymX_mk; auto. }
+  destruct p, m; cbn [mv_win mv_window]; try (apply Hm; exact I).
+  all: try (destruct passed; [apply sym_end_step; [exact Hlen | exact Hc | discriminate] |]).
+  all: destruct a as [la ca pa hwa hea bfa ea tua tta liba gya], b; sw_cbn.
+  all: simpl_step; split_tests; fin_sym.
+  all: try (apply update_nth_swap; lia).
+Qed.
+
+(** *** Declaring attackers *)
+
+Lemma sublist_subsets : forall ws l, sublist ws l -> In ws (subsets l).
+Proof.
+  intros ws l H. unfold subsets. induction H as [| x l l' _ IH | x l l' _ IH]; cbn [fold_right].
+  - left. reflexivity.
+  - apply in_app_iff. left. exact IH.
+  - apply in_app_iff. right. apply in_map. exact IH.
+Qed.
+
+Lemma sublist_ge : forall ws T, sublist ws T -> Forall (fun i => 2 <= i) T -> Forall (fun i => 2 <= i) ws.
+Proof.
+  intros ws T Hs HT. rewrite Forall_forall in *. intros x Hx. apply HT, (sublist_incl _ _ Hs), Hx.
+Qed.
+
+(** The attackers in the swapped state: the renamed ones, sorted. *)
+Lemma attack_ws : forall l ws, 2 <= length l ->
+  sublist ws (indices_where (fun _ w => can_pump w) l) ->
+  exists ws', sublist ws' (indices_where (fun _ w => can_pump w) (swap01 l)) /\
+    (ws' = map swi ws \/ exists r, ws = 0 :: 1 :: r /\ Forall (fun i => 2 <= i) r /\ ws' = ws).
+Proof.
+  intros [| x0 [| x1 r]] ws H Hs; cbn in H; try lia. cbn [swap01] in *.
+  rewrite !indices_where_from, !ind_from_cons in *.
+  pose proof (ind_from_ge 2 (fun _ w => can_pump w) r) as HT.
+  set (T := ind_from 2 (fun _ w => can_pump w) r) in *.
+  assert (Hpl : forall w, sublist w T -> map swi w = w)
+    by (intros w Hw; apply map_swi_big; eapply sublist_ge; eassumption).
+  destruct (can_pump x0), (can_pump x1).
+  - inversion Hs as [| ? ? ? Hs1 | ? w ? Hs1]; subst.
+    + inversion Hs1 as [| ? ? ? Hs2 | ? w ? Hs2]; subst.
+      * exists ws. split; [apply sl_skip, sl_skip, Hs2 | left; symmetry; apply Hpl, Hs2].
+      * exists (0 :: w). split; [apply sl_keep, sl_skip, Hs2 | left; cbn; rewrite Hpl; auto].
+    + inversion Hs1 as [| ? ? ? Hs2 | ? w' ? Hs2]; subst.
+      * exists (1 :: w). split; [apply sl_skip, sl_keep, Hs2 | left; cbn; rewrite Hpl; auto].
+      * exists (0 :: 1 :: w'). split; [apply sl_keep, sl_keep, Hs2 |].
+        right. exists w'. split; [reflexivity |]. split; [eapply sublist_ge; eassumption | reflexivity].
+  - inversion Hs as [| ? ? ? Hs1 | ? w ? Hs1]; subst.
+    + exists ws. split; [apply sl_skip, Hs1 | left; symmetry; apply Hpl, Hs1].
+    + exists (1 :: w). split; [apply sl_keep, Hs1 | left; cbn; rewrite Hpl; auto].
+  - inversion Hs as [| ? ? ? Hs1 | ? w ? Hs1]; subst.
+    + exists ws. split; [apply sl_skip, Hs1 | left; symmetry; apply Hpl, Hs1].
+    + exists (0 :: w). split; [apply sl_keep, Hs1 | left; cbn; rewrite Hpl; auto].
+  - exists ws. split; [exact Hs | left; symmetry; apply Hpl, Hs].
+Qed.
+
+Lemma mem_ws : forall ws ws',
+  (ws' = map swi ws \/ exists r, ws = 0 :: 1 :: r /\ Forall (fun i => 2 <= i) r /\ ws' = ws) ->
+  forall j, existsb (Nat.eqb j) ws' = existsb (Nat.eqb (swi j)) ws.
+Proof.
+  intros ws ws' [-> | (r & -> & Hr & ->)] j; [apply mem_map_swi |].
+  cbn [existsb]. rewrite <- (mem_map_swi j r), (map_swi_big r Hr).
+  destruct j as [| [| j]]; cbn; reflexivity.
+Qed.
+
+Lemma sym_attack : forall act ft a b c c' ws k, 2 <= length a.(bf) ->
+  In (Attack ws k) (moves (mkState act ft a b c ChooseAttack)) ->
+  exists m', In m' (moves (mkState act ft (sw_side a) b c' ChooseAttack)) /\
+    Sym (do_attack ws k (mkState act ft a b c ChooseAttack)) (step (mkState act ft (sw_side a) b c' ChooseAttack) m').
+Proof.
+  intros act ft a b c c' ws k Hlen Hin.
+  unfold moves, attack_moves in *. cbn [get_side Model.active Model.sideA Model.sideB Model.pend] in *.
+  apply in_flat_map in Hin as (ws0 & Hws & Hin). apply in_map_iff in Hin as (k0 & E & Hk). injection E as -> ->.
+  destruct act.
+  - destruct (attack_ws a.(bf) ws Hlen (subsets_sublist _ _ Hws)) as (ws' & Hws' & Hrel).
+    exists (Attack ws' k). split.
+    + apply in_flat_map. exists ws'. split; [apply sublist_subsets; destruct a; exact Hws' |].
+      apply in_map. destruct a; exact Hk.
+    + destruct a as [la ca pa hwa hea bfa ea tua tta liba gya], b; sw_cbn.
+      simpl_step. apply SymX_mk.
+      * cbn. rewrite length_tap_all. exact Hlen.
+      * unfold sw_side, set_bf; cbn. f_equal. apply taps_swap; [exact Hlen | apply mem_ws; exact Hrel].
+      * split; [reflexivity | split; [reflexivity |]]. cbn [Model.atk Model.blk].
+        destruct Hrel as [-> | (r & -> & Hr & ->)].
+        -- left. rewrite map_map. auto.
+        -- right. exists r. cbn. repeat split; auto. lia.
+  - exists (Attack ws k). split.
+    + apply in_flat_map. exists ws. split; [exact Hws | apply in_map; exact Hk].
+    + destruct a as [la ca pa hwa hea bfa ea tua tta liba gya], b; sw_cbn.
+      simpl_step. apply SymX_mk.
+      * exact Hlen.
+      * reflexivity.
+      * split; [reflexivity | split; [reflexivity |]]. split; [reflexivity |]. cbn.
+        rewrite map_map. reflexivity.
+Qed.
+
+(** *** Declaring blockers *)
+
+Lemma length_product : forall {X} (cs : list (list X)) x, In x (product cs) -> length x = length cs.
+Proof. intros X cs x H. apply in_product in H. eapply Forall2_length. exact H. Qed.
+
+Lemma product_map : forall {X} (g : X -> X) cs x, In x (product cs) ->
+  (forall c y, In c cs -> In y c -> In (g y) c) -> In (map g x) (product cs).
+Proof.
+  intros X g cs. induction cs as [| c cs IH]; intros x Hx Hg; cbn [product fold_right] in *.
+  - destruct Hx as [<- | []]. left. reflexivity.
+  - apply in_flat_map in Hx as (y & Hy & Hx). apply in_map_iff in Hx as (x' & <- & Hx').
+    apply in_flat_map. exists (g y). split; [apply Hg; [left; reflexivity | exact Hy] |].
+    cbn [map]. apply in_map. apply IH; [exact Hx' |]. intros c' y' Hc'. apply Hg. right. exact Hc'.
+Qed.
+
+Lemma product_swap01 : forall {X} (cs : list (list X)) x, In x (product cs) ->
+  In (swap01 x) (product (swap01 cs)).
+Proof.
+  intros X [| c0 [| c1 cs]] x Hx.
+  - destruct Hx as [<- | []]. left. reflexivity.
+  - pose proof (length_product _ _ Hx) as Hl. destruct x as [| y [| y' x]]; cbn in Hl; try lia. exact Hx.
+  - cbn [product fold_right swap01] in *.
+    apply in_flat_map in Hx as (y0 & Hy0 & Hx). apply in_map_iff in Hx as (x1 & <- & Hx1).
+    apply in_flat_map in Hx1 as (y1 & Hy1 & Hx1). apply in_map_iff in Hx1 as (x' & <- & Hx').
+    cbn [swap01]. apply in_flat_map. exists y1. split; [exact Hy1 |]. apply in_map.
+    apply in_flat_map. exists y0. split; [exact Hy0 |]. apply in_map. exact Hx'.
+Qed.
+
+
+Lemma bv_swap01 : forall n t v, In v (bounded_vectors n t) -> In (swap01 v) (bounded_vectors n t).
+Proof.
+  intros [| [| n]] t v Hv.
+  - destruct Hv as [<- | []]. left. reflexivity.
+  - cbn [bounded_vectors] in Hv. apply in_flat_map in Hv as (k & Hk & Hv).
+    apply in_map_iff in Hv as (v' & <- & Hv'). destruct Hv' as [<- | []]. cbn [swap01].
+    cbn [bounded_vectors]. apply in_flat_map. exists k. split; [exact Hk |]. apply in_map. left. reflexivity.
+  - cbn [bounded_vectors] in Hv |- *.
+    apply in_flat_map in Hv as (k0 & Hk0 & Hv). apply in_map_iff in Hv as (v1 & <- & Hv1).
+    apply in_flat_map in Hv1 as (k1 & Hk1 & Hv1). apply in_map_iff in Hv1 as (v' & <- & Hv').
+    apply in_seq in Hk0, Hk1. cbn [swap01].
+    apply in_flat_map. exists k1. split; [apply in_seq; lia |]. apply in_map.
+    apply in_flat_map. exists k0. split; [apply in_seq; lia |]. apply in_map.
+    replace (t - k1 - k0) with (t - k0 - k1) by lia. exact Hv'.
+Qed.
+
+Lemma list_sum_swap01 : forall l, list_sum (swap01 l) = list_sum l.
+Proof. intros l. apply list_sum_perm, perm_swap01. Qed.
+
+Definition blk_of (wb : list (option nat)) (tb : list nat) : list (list blocker) :=
+  map (fun '(a, k) =>
+         map BW (indices_where (fun _ o => match o with Some b => b =? a | None => false end) wb)
+         ++ repeat BT k)
+      (enum tb).
+
+Lemma do_block_eq : forall wb tb tr s, do_block wb tb tr s =
+  let c := mkCombat s.(cmb).(atk) s.(cmb).(atk_thop) (blk_of wb tb) tr in
+  if has_multiblock c then set_pend ChooseOrder (set_cmb c s)
+  else set_pend (Window DeclBlk s.(active) false) (set_cmb c s).
+Proof. reflexivity. Qed.
+
+Lemma nth_error_map_enum : forall {X Y} (h : nat * X -> Y) l i,
+  nth_error (map h (enum l)) i = option_map (fun x => h (i, x)) (nth_error l i).
+Proof. intros. rewrite nth_error_map, nth_error_enum. destruct (nth_error l i); reflexivity. Qed.
+
+Lemma length_blk_of : forall wb tb, length (blk_of wb tb) = length tb.
+Proof. intros. unfold blk_of. rewrite length_map. apply length_enum. Qed.
+
+(** B blocks both of A's attacking Walkers' swapped positions. *)
+Lemma blk_of_cross : forall wb tb, 2 <= length tb ->
+  blk_of (map (option_map swi) wb) (swap01 tb) = swap01 (blk_of wb tb).
+Proof.
+  intros wb tb H. apply nth_error_ext. intros i.
+  rewrite nth_error_swap01 by (rewrite length_blk_of; exact H).
+  unfold blk_of. rewrite !nth_error_map_enum, nth_error_swap01 by exact H.
+  destruct (nth_error tb (swi i)) as [k |]; [| reflexivity]. cbn [option_map]. do 2 f_equal.
+  rewrite !indices_where_from, ind_from_map. f_equal. apply ind_from_ext.
+  intros _ [o |]; cbn; [apply swi_eqb | reflexivity].
+Qed.
+
+(** A blocks with its Walkers in the other order. *)
+Lemma blk_of_perm : forall wb tb, 2 <= length wb ->
+  Forall2 (fun bs bs' => Permutation bs' (map ren_b bs)) (blk_of wb tb) (blk_of (swap01 wb) tb).
+Proof.
+  intros wb tb H. unfold blk_of. generalize (enum tb). intros l.
+  induction l as [| [a k] l IH]; cbn [map]; constructor; [| exact IH].
+  rewrite map_app, map_map, map_repeat. cbn [ren_b].
+  apply Permutation_app_tail. rewrite <- (map_map swi BW). apply Permutation_map.
+  apply (indices_swap_perm (fun o => match o with Some b => b =? a | None => false end)). exact H.
+Qed.
+
+Lemma multiblock_perm : forall l l', Forall2 (fun bs bs' => Permutation bs' (map ren_b bs)) l l' ->
+  existsb (fun bs => 2 <=? length bs) l' = existsb (fun bs => 2 <=? length bs) l.
+Proof.
+  intros l l' H. induction H as [| bs bs' l l' Hp _ IH]; cbn [existsb]; [reflexivity |].
+  rewrite IH, (Permutation_length Hp), length_map. reflexivity.
+Qed.
+
+Lemma perm_exact : forall l l', Forall2 (fun bs bs' => Permutation bs' (map ren_b bs)) l l' ->
+  existsb (fun bs => 2 <=? length bs) l = false -> l' = map (map ren_b) l.
+Proof.
+  intros l l' H. induction H as [| bs bs' l l' Hp _ IH]; cbn [existsb map]; intros Hx; [reflexivity |].
+  apply orb_false_iff in Hx as [H1 H2]. apply Nat.leb_gt in H1. f_equal; [| apply IH, H2].
+  apply perm_le1; [symmetry; exact Hp | rewrite length_map; exact H1].
+Qed.
+
+
+Lemma sym_block : forall act ft a b c c' wb tb tr, 2 <= length a.(bf) ->
+  cmb_rel act ChooseBlock c c' ->
+  In (Block wb tb tr) (moves (mkState act ft a b c ChooseBlock)) ->
+  exists m', In m' (moves (mkState act ft (sw_side a) b c' ChooseBlock)) /\
+    Sym (do_block wb tb tr (mkState act ft a b c ChooseBlock)) (step (mkState act ft (sw_side a) b c' ChooseBlock) m').
+Proof.
+  intros act ft a b [atk k blk tr0] [atk' k' blk' tr0'] wb tb tr Hlen Hc Hin.
+  destruct Hc as (Ek & Etr & Hc). cbn [Model.atk_thop Model.trades Model.atk Model.blk] in Ek, Etr, Hc.
+  subst k' tr0'. unfold crossed in Hc. cbn [Model.atk_thop Model.trades Model.atk Model.blk] in Hc.
+  unfold moves, block_moves, defender in *.
+  cbn [get_side opp Model.active Model.sideA Model.sideB Model.pend Model.cmb Model.atk Model.atk_thop] in *.
+  apply in_flat_map in Hin as (wb0 & Hwb & Hin). apply in_flat_map in Hin as (tb0 & Htb & Hin).
+  apply in_map_iff in Hin as (tr1 & E & Htr). injection E as -> -> ->.
+  destruct act; cbn [get_side opp Model.active Model.sideA Model.sideB Model.pend Model.cmb Model.atk Model.atk_thop] in *.
+  - destruct Hc as [(-> & ->) | (r & -> & Hr & -> & Hl & ->)].
+    + (* the same blocks *)
+      exists (Block wb tb tr). rewrite length_map. split.
+      * apply in_flat_map. exists wb. split; [exact Hwb |].
+        apply in_flat_map. exists tb. split; [exact Htb |]. apply in_map. exact Htr.
+      * cbn [step Model.pend]. rewrite !do_block_eq. cbv zeta.
+        cbn [Model.cmb Model.atk Model.atk_thop Model.active].
+        unfold has_multiblock. cbn [Model.blk].
+        destruct (existsb _ (blk_of wb tb)); unfold set_pend, set_cmb; cbn;
+          (apply SymX_mk; [exact Hlen | reflexivity |]);
+          (split; [reflexivity | split; [reflexivity |]]); left; split; reflexivity.
+    + (* both of A's Walkers attack: B's blocks on them swap *)
+      pose proof (in_bounded_vectors _ _ _ Htb) as (Htl & Hts). cbn [length] in Htl.
+      exists (Block (map (option_map swi) wb) (swap01 tb) tr). split.
+      * apply in_flat_map. exists (map (option_map swi) wb). split.
+        { apply product_map; [exact Hwb |]. intros cx y Hcx Hy.
+          apply in_map_iff in Hcx as (w & <- & _). destruct (wtapped w); [destruct Hy as [<- | []]; left; reflexivity |].
+          destruct Hy as [<- | Hy]; [left; reflexivity | right].
+          apply in_map_iff in Hy as (i & <- & Hi). cbn [option_map]. apply in_map. apply in_seq in Hi. apply in_seq.
+          cbn [length] in *. pose proof (swi_lt i (S (S (length r))) ltac:(lia) ltac:(lia)). lia. }
+        apply in_flat_map. exists (swap01 tb). split; [apply bv_swap01; exact Htb |].
+        apply in_map. rewrite list_sum_swap01. exact Htr.
+      * cbn [step Model.pend]. rewrite !do_block_eq. cbv zeta.
+        cbn [Model.cmb Model.atk Model.atk_thop Model.active].
+        rewrite blk_of_cross by lia.
+        unfold has_multiblock. cbn [Model.blk]. rewrite (existsb_perm _ _ _ (perm_swap01 _)).
+        destruct (existsb _ (blk_of wb tb)); unfold set_pend, set_cmb; cbn;
+          (apply SymX_mk; [exact Hlen | reflexivity |]);
+          (split; [reflexivity | split; [reflexivity |]]); right; exists r; cbn;
+          (repeat split; auto); rewrite length_blk_of; lia.
+  - (* A blocks: its Walkers swap places in the block *)
+    destruct Hc as (-> & Hb).
+    assert (Hwl : 2 <= length wb) by (rewrite (length_product _ _ Hwb), length_map; exact Hlen).
+    exists (Block (swap01 wb) tb tr). split.
+    + apply in_flat_map. exists (swap01 wb). split.
+      { destruct a; cbn [sw_side set_bf Model.bf] in *. unfold sw_side, set_bf. cbn [Model.bf].
+        rewrite map_swap01. apply product_swap01. exact Hwb. }
+      apply in_flat_map. exists tb. split; [destruct a; exact Htb |]. apply in_map. destruct a; exact Htr.
+    + cbn [step Model.pend]. rewrite !do_block_eq. cbv zeta.
+      cbn [Model.cmb Model.atk Model.atk_thop Model.active].
+      pose proof (blk_of_perm wb tb Hwl) as Hp.
+      unfold has_multiblock. cbn [Model.blk]. rewrite (multiblock_perm _ _ Hp).
+      destruct (existsb _ (blk_of wb tb)) eqn:Em; unfold set_pend, set_cmb; cbn;
+        (apply SymX_mk; [exact Hlen | reflexivity |]);
+        (split; [reflexivity | split; [reflexivity |]]); (split; [reflexivity |]); cbn [blk_rel].
+      * exact Hp.
+      * apply perm_exact; assumption.
+Qed.
