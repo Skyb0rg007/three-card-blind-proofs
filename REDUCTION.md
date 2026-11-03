@@ -1252,3 +1252,76 @@ Done: `a_first_a_safe` and `a_first_draw` are proved in `Results.v`.
   entries for adraw (from 5,879,511), and the whole build to about 1.3
   CPU-hours (from 5.5): adraw 0.73 (was 3.7), bfirst 0.44 (was 1.0),
   afirst 0.14 (was 0.75).
+
+## Build cost: caps, Walker order and lookups
+
+The three tables were cut down again, with no change to the checkers.
+Rocq's work per entry is what counts here, so each change was measured by
+compiling chunks (and finally a full build), not by entry counts alone.
+
+- **Smaller caps.** The solver tables are re-solved with the protagonist's
+  caps as small as still certify the opening: B-safe A-first at
+  `TCB_OT=9` (was 10), the B-first win at `TCB_OT=TCB_OTT=12` (was 14), the
+  A-safe table at `TCB_OT=TCB_OTT=5` (was 6). Smaller caps mean smaller
+  saturated states, and the model's naturals are unary, so every node of
+  a check is cheaper; they also leave fewer distinct positions.
+- **One order of A's Walkers** (`Sym.v`, `SymCert.v`, `SymCertA.v`).
+  Swapping A's two Walkers (and renaming the combat to match) preserves
+  `wins` and `safe` for both players, so a table needs each position with
+  only one order of A's Walkers. The tables store them sorted by
+  `Sym.normA` (by counters, then untapped first, then not sick first), and
+  every lookup sorts the state it is asked about the same way
+  (`Packed.sortA`, proved equal to `normA`). `certified_opening_sym`,
+  `certified_win_opening_sym` and `certified_opening_a_sym` are the
+  checkers' theorems for such lookups: the checked entry may be the
+  looked-up state with A's Walkers swapped. The exporters sort keys
+  exactly as `normA` does (`Certify.canon`), after `key`'s clamping, and
+  their emulation of Rocq's lookups sorts the same way.
+- **Lookups by binary search on the whole key.** The packed arrays are now
+  sorted by the second integer of the key, then the first, whose low five
+  bits are A's life, so one comparison of two integers orders keys, and a
+  position's entries at every A life are still next to each other. A B
+  lookup binary-searches the first entry of the position at A's life or
+  more and scans on from there (it used to scan the position's whole run,
+  35% of it below A's life); the A lookup binary-searches the last key not
+  above the state's and needs no scan at all. The accept check
+  (`state_eqb` against the looked-up state with A's life changed) is
+  unchanged, so the soundness proofs barely change.
+- **A cheaper memo hash.** `Packed.shash` leaves out hands, libraries and
+  graveyards (they rarely change within a turn on their own) and mixes
+  with one multiplication instead of two: 2–5% faster checks. The memos'
+  proofs don't depend on the hash.
+- **Chunks cut by a fitted cost model.** Each entry's cost in Rocq is
+  estimated from what its check does, with coefficients fitted to the chunk
+  times of a full build: for the B tables
+  9.34e-6·moves listed + 1.69e-5·lookups started + 2.79e-6·run elements
+  scanned, for the A table 2.5e-5·nodes + 2.8e-5·lookups + 2.7e-5·B's life
+  in the entry (seconds). Refits on these tables did no better: chunks
+  compiled one at a time land within about 10–15% of the model, and in a
+  `-j 3` build chunks running at the same time slow each other unevenly
+  (the B-first chunks took 55–90 s, the slow ones side by side).
+- **Closure rounds and ranks.** The exports' move choice and its rounds
+  (`TCB_ROUNDS`, `TCB_PREV`) are as before; `certify-win-export` now gives
+  the records the smallest ranks their checks allow by default (ranks are
+  unary in Rocq; `TCB_RERANK=0` keeps the closure's). Rounds help less
+  and less: B-first 668,105 → 585,780 → 576,224 → 574,751 → 573,869
+  records over four rounds (557 ranks become 332), A-first B-safe 128,187
+  after two rounds and 127,974 after four. `certify-a` rounds are noisy
+  (581,561 to 620,180 entries for rounds 3–9 after 693,557, 641,062 and
+  602,482); the shipped table is round 6, the one with the smallest
+  estimated cost.
+
+Two clean `-j 3` builds one after the other on the same machine (Rocq
+CPU time from dune's trace):
+
+| Table | entries before | after | CPU before | after |
+|---|---|---|---|---|
+| `proofs/bfirst` | 936,099 | 573,869 | 2402 s | 1115 s |
+| `proofs/afirst` | 270,340 | 127,974 | 569 s | 196 s |
+| `proofs/adraw` | 1,077,719 | 581,561 | 3404 s | 1368 s |
+| whole build | | | 6478 s (1.80 h), 2235 s wall | 2784 s (0.77 h), 985 s wall |
+
+The machine was slower than when the old build cost (1.33 CPU-hours) was
+measured; the same-session ratio is 0.43 for CPU and 0.44 for wall time.
+The largest job is now `core/Mono.v` or `bfirst/Data.v`, at 1.3 GB (was
+2.0 GB for `bfirst/Data.v`).
