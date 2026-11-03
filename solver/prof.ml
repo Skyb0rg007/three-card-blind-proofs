@@ -12,9 +12,9 @@ open Model
 module H = Certify.H
 
 type counts = { mutable nodes : int; mutable forced : int; mutable hits : int; mutable moves : int;
-                mutable steps : int; mutable leaves : int }
+                mutable steps : int; mutable leaves : int; mutable bdec : int; mutable bnz : int; mutable maxlen : int }
 
-let zero () = { nodes = 0; forced = 0; hits = 0; moves = 0; steps = 0; leaves = 0 }
+let zero () = { nodes = 0; forced = 0; hits = 0; moves = 0; steps = 0; leaves = 0; bdec = 0; bnz = 0; maxlen = 0 }
 
 (* The mirror: [leaf s] is the turn-start test, [order s ms] B's order. *)
 let search ~h ~ott ~win cnt leaf order e =
@@ -33,7 +33,14 @@ let search ~h ~ott ~win cnt leaf order e =
         let g m = cnt.steps <- cnt.steps + 1; let s' = step s m in (not (too_many ott s')) && go false s' in
         let run () =
           match to_move s with
-          | PB -> List.exists g (order s ms)
+          | PB ->
+            let o = order s ms in
+            if List.length ms > 1 then begin
+              cnt.bdec <- cnt.bdec + 1;
+              if List.hd o <> List.hd ms then cnt.bnz <- cnt.bnz + 1;
+              cnt.maxlen <- max cnt.maxlen (List.length ms)
+            end;
+            List.exists g o
           | PA -> if win && ms = [] then false else List.for_all g ms
         in
         match ms with
@@ -45,6 +52,44 @@ let search ~h ~ott ~win cnt leaf order e =
       end
   in
   go true e
+
+(* The mirror where B tries [pick s] first only on the opening path of the
+   turn: from the entry through B's nodes and A's forced nodes, until A has
+   a choice (what a hint stored with the entry could encode). *)
+let search_path ~h ~ott ~win cnt leaf pick e =
+  let memo = H.create 256 in
+  let rec go root onpath s =
+    match winner s with
+    | Some PB -> true
+    | Some PA -> false
+    | None ->
+      if (not root) && is_turn_start s then leaf s
+      else if huge_event h s then false
+      else begin
+        cnt.nodes <- cnt.nodes + 1;
+        let ms = moves s in
+        let g on m = cnt.steps <- cnt.steps + 1; let s' = step s m in (not (too_many ott s')) && go false on s' in
+        let run () =
+          match to_move s with
+          | PB ->
+            if onpath then
+              match pick s with
+              | Some m -> g true m || List.exists (g false) (List.filter (fun m' -> m' <> m) ms)
+              | None -> List.exists (g false) ms
+            else List.exists (g false) ms
+          | PA ->
+            if win && ms = [] then false
+            else (match ms with [ m ] -> g onpath m | _ -> List.for_all (g false) ms)
+        in
+        match ms with
+        | [ _ ] -> run ()
+        | _ ->
+          match H.find_opt memo s with
+          | Some r -> r
+          | None -> let r = run () in H.replace memo s r; r
+      end
+  in
+  go true true e
 
 (* B's working moves: an exhaustive memoised search, B nodes recording
    their first working move. *)
@@ -72,7 +117,8 @@ let first_working ~h ~ott ~win leaf e =
           r
   in
   ignore (go true e);
-  fun s ms -> match H.find_opt pick s with Some m -> m :: List.filter (fun m' -> m' <> m) ms | None -> ms
+  ((fun s ms -> match H.find_opt pick s with Some m -> m :: List.filter (fun m' -> m' <> m) ms | None -> ms),
+   fun s -> H.find_opt pick s)
 
 (* TCB_BORDER=k1,k2,... (experiment): B tries its moves in reverse order at
    nodes of these kinds (attack, block, order, damage, window, upkeep). *)
@@ -91,7 +137,7 @@ let profile_b dir =
   let n = Array.length k1s in
   let win = has "Definition RV " in
   let vs = if win then arr "RV" else arr "V" in
-  let nf = 12 in
+  let nf = 17 in
   let path = Filename.concat dir (Printf.sprintf "prof-%d" (Unix.getpid ())) in
   let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
   Unix.ftruncate fd (8 * nf * n);
@@ -124,12 +170,15 @@ let profile_b dir =
            Certify.c_lk := 0; Certify.c_scan := 0; Certify.c_bs := 0;
            let ok1 = search ~h ~ott ~win c1 leaf border e in
            let lk1 = !Certify.c_lk and sc1 = !Certify.c_scan and bs1 = !Certify.c_bs in
-           let order = first_working ~h ~ott ~win leaf e in
+           let order, pick = first_working ~h ~ott ~win leaf e in
            let ok2 = search ~h ~ott ~win c2 leaf order e in
-           if not (ok1 && ok2) then failwith (Printf.sprintf "profile-b: entry %d fails" j);
+           let c3 = zero () in
+           let ok3 = search_path ~h ~ott ~win c3 leaf pick e in
+           if not (ok1 && ok2 && ok3) then failwith (Printf.sprintf "profile-b: entry %d fails" j);
            let put i x = fa.{(nf * j) + i} <- x in
            put 0 c1.nodes; put 1 c1.forced; put 2 c1.hits; put 3 c1.moves; put 4 c1.steps; put 5 c1.leaves;
-           put 6 lk1; put 7 sc1; put 8 bs1; put 9 c2.nodes; put 10 c2.steps; put 11 c2.moves
+           put 6 lk1; put 7 sc1; put 8 bs1; put 9 c2.nodes; put 10 c2.steps; put 11 c2.moves;
+           put 12 c3.nodes; put 13 c3.steps; put 14 c2.bdec; put 15 c2.bnz; put 16 c2.maxlen
          done;
          0));
   let tot = Array.make nf 0 in
@@ -145,7 +194,8 @@ let profile_b dir =
   Option.iter close_out oc;
   Sys.remove path;
   let names = [| "nodes"; "forced"; "hits"; "moves"; "steps"; "leaves"; "starts"; "scan"; "bs"; "nodes(oracle order)";
-                 "steps(oracle order)"; "moves(oracle order)" |] in
+                 "steps(oracle order)"; "moves(oracle order)"; "nodes(path hint)"; "steps(path hint)";
+                 "B choices (oracle)"; "not first (oracle)"; "most moves (sum)" |] in
   Printf.printf "profile-b %s: %d entries\n" dir n;
   Array.iteri (fun i x -> Printf.printf "  %-20s %12d  (%.1f per entry)\n" names.(i) x (float x /. float n)) tot
 

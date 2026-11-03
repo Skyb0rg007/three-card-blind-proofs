@@ -339,6 +339,7 @@ let canon s =
 let c_lk = ref 0
 let c_bs = ref 0
 let c_scan = ref 0
+let c_scan_lo = ref 0
 let c_below = ref 0
 
 (* ** The checks Rocq runs on each entry, and their costs
@@ -365,7 +366,7 @@ let costs ~dir n (ok : int ref -> int -> bool) =
      Rocq's cost: cost, packed starts (lookups and belows), binary-search
      steps, run elements scanned, belows *)
   let feat = Sys.getenv_opt "TCB_FEAT" in
-  let nf = 5 in
+  let nf = 6 in
   let fpath = path ^ "-feat" in
   let fa =
     match feat with
@@ -383,12 +384,12 @@ let costs ~dir n (ok : int ref -> int -> bool) =
          let a, b = Par.chunk n w k in
          let c = ref 0 in
          for j = a to b - 1 do
-           c := 0; c_lk := 0; c_bs := 0; c_scan := 0; c_below := 0;
+           c := 0; c_lk := 0; c_bs := 0; c_scan := 0; c_below := 0; c_scan_lo := 0;
            cost.{j} <- (if ok c j then !c else -1);
            match fa with
            | Some fa ->
              fa.{nf * j} <- cost.{j}; fa.{(nf * j) + 1} <- !c_lk; fa.{(nf * j) + 2} <- !c_bs;
-             fa.{(nf * j) + 3} <- !c_scan; fa.{(nf * j) + 4} <- !c_below
+             fa.{(nf * j) + 3} <- !c_scan; fa.{(nf * j) + 4} <- !c_below; fa.{(nf * j) + 5} <- !c_scan_lo
            | None -> ()
          done;
          0));
@@ -398,8 +399,8 @@ let costs ~dir n (ok : int ref -> int -> bool) =
    | Some f, Some fa ->
      let oc = open_out f in
      for j = 0 to n - 1 do
-       Printf.fprintf oc "%d %d %d %d %d %d\n" j fa.{nf * j} fa.{(nf * j) + 1} fa.{(nf * j) + 2} fa.{(nf * j) + 3}
-         fa.{(nf * j) + 4}
+       Printf.fprintf oc "%d %d %d %d %d %d %d\n" j fa.{nf * j} fa.{(nf * j) + 1} fa.{(nf * j) + 2} fa.{(nf * j) + 3}
+         fa.{(nf * j) + 4} fa.{(nf * j) + 5}
      done;
      close_out oc;
      Sys.remove fpath
@@ -515,7 +516,11 @@ let packed_start k1s k2s k1 k2 =
   go 32 0 (Array.length k1s)
 
 (* Packed.in_run *)
-let in_run k1s k2s j k1 k2 = incr c_scan; j < Array.length k1s && hi k1s.(j) = hi k1 && k2s.(j) = k2
+let in_run k1s k2s j k1 k2 =
+  incr c_scan;
+  let r = j < Array.length k1s && hi k1s.(j) = hi k1 && k2s.(j) = k2 in
+  if r && alife k1s.(j) < alife k1 then incr c_scan_lo;
+  r
 
 (* Mono.bump PA, and the model's truncated subtraction *)
 let bump_a d s = { s with sideA = { s.sideA with life = s.sideA.life + d } }
@@ -656,6 +661,8 @@ let entry_check ~h ~ott ~tt ~fuel k1s k2s vs c j =
    the turn starts reached ([leaf], infinite when B fails there). With
    [win], A must have a move (WinCert.check_win). Returns the cost and B's
    picks. *)
+let last_work = ref 0
+
 let choose_turn ~h ~ott ~win leaf e =
   let memo = H.create 1024 and pick = H.create 256 in
   let rec cost root s =
@@ -687,6 +694,7 @@ let choose_turn ~h ~ott ~win leaf e =
           c
   in
   let c = cost true e in
+  last_work := H.length memo;
   (c, pick)
 
 (* The turn starts B's picks reach from [e], each given to [leaf]. *)
@@ -712,11 +720,33 @@ let env_int k d = match Sys.getenv_opt k with Some v -> int_of_string v | None -
 (* The weight of adding the key [e] in round [r] of [rounds]: 1 in round 0;
    later a key the previous round collected weighs 1 / (1 + its uses
    there), any other 4 (Shrink's rounds). *)
+(* TCB_WORKW=1 (experiment): in rounds after the first, a key's weight is
+   also scaled by the work of its turn in the previous round (the size of
+   [choose_turn]'s search, against the mean), so that cheap entries are
+   preferred. Keys are hashed (collisions only blur the weights). *)
+let workw = Sys.getenv_opt "TCB_WORKW" = Some "1"
+let works_prev : (int, int) Hashtbl.t ref = ref (Hashtbl.create 1)
+let works_cur : (int, int) Hashtbl.t ref = ref (Hashtbl.create 1_000_000)
+let work_mean = ref 1.
+
+let next_works () =
+  works_prev := !works_cur;
+  works_cur := Hashtbl.create 1_000_000;
+  let s = Hashtbl.fold (fun _ w acc -> acc + w) !works_prev 0 in
+  work_mean := float s /. float (max 1 (Hashtbl.length !works_prev))
+
+let note_work e = if workw then Hashtbl.replace !works_cur (Hashtbl.hash e) !last_work
+
 let round_weight prev e =
   match prev with
   | None -> 1.
   | Some (used, uses) ->
-    if Hashtbl.mem used e then 1. /. (1. +. float (Option.value (Hashtbl.find_opt uses e) ~default:0)) else 4.
+    let w =
+      if Hashtbl.mem used e then 1. /. (1. +. float (Option.value (Hashtbl.find_opt uses e) ~default:0)) else 4. in
+    if not workw then w
+    else match Hashtbl.find_opt !works_prev (Hashtbl.hash e) with
+      | Some x -> w *. float x /. !work_mean
+      | None -> w
 
 (* ** Safety certificates in Rocq (Packed.v, SafeTable)
 
@@ -776,6 +806,7 @@ let safe_closure t lk starter prev =
       | None -> (match rep q with Some (k, v') when v' <= x -> round_weight prev (enc k) | _ -> infinity)
     in
     let c, pick = choose_turn ~h:t.h ~ott:t.ott ~win:false leaf e in
+    note_work (enc s);
     if c = infinity then incr bad
     else
       walk_turn ~h:t.h ~ott:t.ott pick (fun s' ->
@@ -806,6 +837,7 @@ let certify_safe_export dir starter ~outdir ~chunks ~fuel:f =
   report 0 !res;
   for r = 1 to rounds do
     let used, uses, _ = !res in
+    next_works ();
     res := safe_closure t lk starter (Some (used, uses));
     report r !res
   done;
@@ -914,6 +946,7 @@ let certify_win_export dir starter ~outdir ~chunks ~fuel:f =
         | None -> (match rep q r x with Some (ql, rk, _) -> round_weight prev (enc ql, rk) | None -> infinity)
       in
       let c, pick = choose_turn ~h:t.h ~ott:t.ott ~win:true leaf e in
+      note_work (enc s, r);
       if c = infinity then incr bad
       else
         walk_turn ~h:t.h ~ott:t.ott pick (fun s' ->
@@ -940,6 +973,7 @@ let certify_win_export dir starter ~outdir ~chunks ~fuel:f =
   report 0 !res;
   for r = 1 to rounds do
     let used, uses, _ = !res in
+    next_works ();
     res := closure (Some (used, uses));
     report r !res
   done;
