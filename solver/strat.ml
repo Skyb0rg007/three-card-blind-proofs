@@ -9,10 +9,17 @@
      move that works. The opponent plays every legal move. OUT gets one line
      per protagonist decision node (features, RULE's moves, the moves that
      work). MODE is bfirst (B's ranked win, B first), bsafe (B safe, A
-     first) or asafe (A safe, A first, lines c + b n).
-   - [strat-fix MODE RULE] solves the game with the protagonist restricted
-     to RULE's moves (Fix, every legal opponent move): the rule's own value
-     at the opening, independent of the tables.
+     first) or asafe (A safe, A first, lines c + b n). Only nodes where
+     some move fails are logged; TCB_DUMP=all logs every node (slow), and
+     TCB_DUMP_PEND=attack (say) only nodes of that kind. TCB_TABLES is
+     the tables directory (default tables), TCB_LIFE B's starting life
+     for bfirst (default 20).
+   - [strat-fix MODE RULE DIR] solves the game with B restricted to
+     RULE's moves (Fix, every legal A move, or the exploration filter with
+     TCB_AFILTER=1; B's Walker cap TCB_T): the rule's own value at the
+     opening, independent of the tables.
+   - [strat-pv asafe RULE LIFE TURNS] prints a principal variation of the
+     A-safe table, A playing RULE where it keeps the slack.
 
    The rules themselves are below ([rules]). *)
 open Model
@@ -221,6 +228,27 @@ let b_block s =
 
 let () = def "bblock" (fun s ms -> match s.pend with ChooseBlock when own PA s -> only (b_block s) ms | _ -> [])
 
+(* As [bblock], but when the attack is lethal, Thopters chump-block A's
+   biggest unblocked Walkers first (a chump stops more than a trade), and
+   only the Thopters left trade with A's Thopters. *)
+let b_block2 s =
+  let a = side PA s and b = side PB s in
+  let c = s.cmb in
+  let pw = List.map (fun i -> (List.nth a.bf i).counters) c.atk in
+  let n = List.length pw in
+  let order = List.sort (fun (_, x) (_, y) -> compare y x) (List.mapi (fun j p -> (j, p)) pw) in
+  let wblk = match walker b, order with Some w, (j, _) :: _ when not w.wtapped -> Some j | _ -> None in
+  let tb = Array.make n 0 in
+  let thops = ref b.thop_u in
+  let tr = ref 0 in
+  let dmg () =
+    List.fold_left (fun acc (j, p) -> if Some j = wblk || tb.(j) > 0 then acc else acc + p) 0 order + (c.atk_thop - !tr) in
+  List.iter (fun (j, p) -> if Some j <> wblk && !thops > 0 && p > 1 && dmg () >= b.life then (tb.(j) <- 1; decr thops)) order;
+  tr := min c.atk_thop !thops;
+  Block ((match b.bf with [] -> [] | _ -> [ wblk ]), Array.to_list tb, !tr)
+
+let () = def "bblock2" (fun s ms -> match s.pend with ChooseBlock when own PA s -> only (b_block2 s) ms | _ -> [])
+
 (* B attacks with every untapped Thopter, and with the Walker unless
    Elixir is in hand and A has an untapped Walker to block with (then it
    stays home to be pumped). *)
@@ -328,6 +356,41 @@ let () = def "batk7" (fun s ms ->
         | Some w -> ready w && not (b.hand_e && w.counters = 1 && a_untapped s)
         | None -> false in
       only (Attack ((if wa then [ 0 ] else []), b.thop_u)) ms
+    | _ -> [])
+
+(* As [batk_he], but the Thopters keep home enough chump blockers that
+   A's all-out attack next turn is not lethal (counting Elixir's 5 life
+   when Elixir is on the battlefield). *)
+let () = def "batk8" (fun s ms ->
+    match s.pend with
+    | ChooseAttack when own PB s ->
+      let b = side PB s in
+      let wa = match walker b with Some w -> ready w && not b.hand_e | None -> false in
+      only (Attack ((if wa then [ 0 ] else []), b.thop_u - keep_home2 s)) ms
+    | _ -> [])
+
+(* As [bmain], but Elixir is cast first, and leftover mana then pumps. *)
+let () = def "bmain2" (fun s ms ->
+    let b = side PB s in
+    match s.pend with
+    | Window (Main2, PB, _) when own PB s ->
+      if b.hand_w > 0 && List.mem (CastWalker 1) ms then [ CastWalker 1 ]
+      else if b.hand_e && List.mem CastElixir ms then [ CastElixir ]
+      else if b.pool > 0 && can_pump_b s then first_in [ Pump 0; Pass ] ms
+      else only Pass ms
+    | Window (Main1, PB, _) when own PB s -> only Pass ms
+    | _ -> [])
+
+(* As [bmain2], but leftover mana is not spent on a pump: the Walker
+   stays untapped for A's turn and grows in A's end step instead. *)
+let () = def "bmain3" (fun s ms ->
+    let b = side PB s in
+    match s.pend with
+    | Window (Main2, PB, _) when own PB s ->
+      if b.hand_w > 0 && List.mem (CastWalker 1) ms then [ CastWalker 1 ]
+      else if b.hand_e && List.mem CastElixir ms then [ CastElixir ]
+      else only Pass ms
+    | Window (Main1, PB, _) when own PB s -> only Pass ms
     | _ -> [])
 
 (* B's upkeep, when A has no Walkers: with B's Walker in the graveyard,
@@ -483,6 +546,23 @@ let () = def "aatk3" (fun s ms ->
         if rd <> [] && List.for_all (fun i -> c i > bw) rd then rd
         else match rd with
           | [ i; j ] when max (c i) (c j) >= 3 -> [ (if c i <= c j then i else j) ]
+          | _ -> [] in
+      only (Attack (ws, a.thop_u)) ms
+    | _ -> [])
+
+(* As [aatk3], but the smaller Walker attacks alone only while B's
+   Walker is tapped (or B has none). *)
+let () = def "aatk4" (fun s ms ->
+    match s.pend with
+    | ChooseAttack when own PA s ->
+      let a = side PA s in
+      let bw = match walker (side PB s) with Some w -> w.counters | None -> 0 in
+      let rd = ready_idx a in
+      let c i = (List.nth a.bf i).counters in
+      let ws =
+        if rd <> [] && List.for_all (fun i -> c i > bw) rd then rd
+        else match rd with
+          | [ i; j ] when max (c i) (c j) >= 3 && not (b_can_block s) -> [ (if c i <= c j then i else j) ]
           | _ -> [] in
       only (Attack (ws, a.thop_u)) ms
     | _ -> [])
