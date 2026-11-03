@@ -567,6 +567,23 @@ let () = def "aatk4" (fun s ms ->
       only (Attack (ws, a.thop_u)) ms
     | _ -> [])
 
+(* As [aatk4], but with B's Walker tapped it is the bigger Walker that
+   attacks alone; the smaller stays home. *)
+let () = def "aatk5" (fun s ms ->
+    match s.pend with
+    | ChooseAttack when own PA s ->
+      let a = side PA s in
+      let bw = match walker (side PB s) with Some w -> w.counters | None -> 0 in
+      let rd = ready_idx a in
+      let c i = (List.nth a.bf i).counters in
+      let ws =
+        if rd <> [] && List.for_all (fun i -> c i > bw) rd then rd
+        else match rd with
+          | [ i; j ] when max (c i) (c j) >= 3 && not (b_can_block s) -> [ (if c i >= c j then i else j) ]
+          | _ -> [] in
+      only (Attack (ws, a.thop_u)) ms
+    | _ -> [])
+
 (* A on B's turn: pass until B's end step; there pump the biggest
    untapped Walker if it is A's biggest Walker or has under 3 counters
    (both Walkers grow to 3/3, then only the biggest grows). *)

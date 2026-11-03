@@ -69,7 +69,11 @@ and Rocq checks every entry of it, so `safe PA (init PA)` (`a_first_a_safe`)
 is a theorem, and with `a_first_b_safe` the A-first game is a draw
 (`a_first_draw`). `REDUCTION.md` (R7 and the end) has the details.
 
-`STRATEGY.md` describes, in plain Magic terms, how B wins when B plays first.
+`STRATEGY.md` explains the three results in plain Magic terms:
+
+- short rule strategies for B (both openings) and for A (A first), with machine checks of how far each agrees with the certificates;
+- the key lines;
+- what the certificates' numbers measure, and why the A-first draw is exactly at 20.
 
 ## Auditing the result
 

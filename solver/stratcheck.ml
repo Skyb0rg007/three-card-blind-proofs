@@ -26,6 +26,9 @@ let report st =
    node. [works m] says whether [m] keeps the table's value. *)
 let hash60 s = (Hashtbl.seeded_hash_param 100 400 1 s lsl 30) lxor Hashtbl.seeded_hash_param 100 400 2 s
 let dump_all = Sys.getenv_opt "TCB_DUMP" = Some "all"
+(* TCB_MAX_ENTRIES: stop the closure after that many entries (a partial
+   count; the report then says how many were still queued) *)
+let max_entries = Certify.env_int "TCB_MAX_ENTRIES" max_int
 (* TCB_DUMP_PEND=attack (say): log only nodes at that kind of decision *)
 let dump_pend = Sys.getenv_opt "TCB_DUMP_PEND"
 let dump_ok s = match dump_pend with None -> true | Some p -> pend_str s.pend = p
@@ -123,7 +126,7 @@ let closure_bfirst rule out =
       | PA -> List.iter (fun m -> collect r false (step s m)) (moves s)
     end
   in
-  while not (Queue.is_empty queue) do
+  while not (Queue.is_empty queue) && st.entries < max_entries do
     let i, r, l = Queue.pop queue in
     if Hashtbl.find used (i, r) = l then
     match Certify.record w i r with
@@ -134,9 +137,10 @@ let closure_bfirst rule out =
           H.reset memo; H.reset visited;
           if ok r true s then collect r true s else st.dead <- st.dead + 1)
         (Certify.record_states w i);
-      if st.entries mod 100_000 = 0 then (Printf.printf "  %d entries, %d queued\n%!" st.entries (Queue.length queue))
+      if st.entries mod 100_000 = 0 then (Printf.printf "  %d entries, %d queued; %d decision nodes, %d exceptions\n%!" st.entries (Queue.length queue) st.distinct st.exc)
     | _ -> st.dead <- st.dead + 1
   done;
+  if not (Queue.is_empty queue) then Printf.printf "partial: stopped at TCB_MAX_ENTRIES with %d still queued\n%!" (Queue.length queue);
   st
 
 (* ** A first: B safe (Certify.oracle with a rule) *)
@@ -169,16 +173,17 @@ let closure_bsafe rule out =
       | PA -> List.iter (fun m -> collect false (step s m)) (moves s)
     end
   in
-  while not (Queue.is_empty queue) do
+  while not (Queue.is_empty queue) && st.entries < max_entries do
     let e, v = Queue.pop queue in
     if Hashtbl.find used e = v then begin
       st.entries <- st.entries + 1;
       let s = entry (Certify.dec e) v in
       H.reset memo; H.reset visited;
       if ok true s then collect true s else st.dead <- st.dead + 1;
-      if st.entries mod 100_000 = 0 then (Printf.printf "  %d entries, %d queued\n%!" st.entries (Queue.length queue))
+      if st.entries mod 100_000 = 0 then (Printf.printf "  %d entries, %d queued; %d decision nodes, %d exceptions\n%!" st.entries (Queue.length queue) st.distinct st.exc)
     end
   done;
+  if not (Queue.is_empty queue) then Printf.printf "partial: stopped at TCB_MAX_ENTRIES with %d still queued\n%!" (Queue.length queue);
   st
 
 (* ** A first: A safe (Certifya, lines c + b n) *)
@@ -246,16 +251,17 @@ let closure_asafe rule out =
       | PB -> List.iter follow (moves s)
     end
   in
-  while not (Queue.is_empty queue) do
+  while not (Queue.is_empty queue) && st.entries < max_entries do
     let e, c, b, lo = Queue.pop queue in
     if Hashtbl.find used (e, b, lo) = c then begin
       st.entries <- st.entries + 1;
       let s = a_entry p.m (Certify.dec e) in
       HL.reset memo; HL.reset visited;
       if ok true s c b lo then collect true s c b lo else st.dead <- st.dead + 1;
-      if st.entries mod 100_000 = 0 then (Printf.printf "  %d entries, %d queued\n%!" st.entries (Queue.length queue))
+      if st.entries mod 100_000 = 0 then (Printf.printf "  %d entries, %d queued; %d decision nodes, %d exceptions\n%!" st.entries (Queue.length queue) st.distinct st.exc)
     end
   done;
+  if not (Queue.is_empty queue) then Printf.printf "partial: stopped at TCB_MAX_ENTRIES with %d still queued\n%!" (Queue.length queue);
   st
 
 let closure mode rname outf =
