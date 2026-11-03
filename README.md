@@ -62,8 +62,9 @@ c + b n, the most life B can have there with A still safe.
 `proofs/core/CheckerA.v` checks line-valued tables, and
 `proofs/core/SaturationA.v` proves the checker sound, both for A's unbounded
 Walker and for B's Walker saturated at a fixed size. `proofs/adraw` holds
-1.1M positions of the solver's table, enough for the check of the
-opening (a position can be answered by the same position with less A life),
+0.58M positions of the solver's table, enough for the check of the
+opening (a position can be answered by the same position with less A life,
+or with A's two Walkers in the other order),
 and Rocq checks every entry of it, so `safe PA (init PA)` (`a_first_a_safe`)
 is a theorem, and with `a_first_b_safe` the A-first game is a draw
 (`a_first_draw`). `REDUCTION.md` (R7 and the end) has the details.
@@ -109,13 +110,12 @@ Build everything with:
 nix-shell --run 'dune build -j 4'
 ```
 
-This takes about 1.3 CPU-hours (28 minutes with `-j 3`): Rocq runs the
-checker on 0.94M positions for the B-first claim (`proofs/bfirst`, 0.44
-CPU-hours: 16 chunks of 1.1–2.8 minutes), 0.27M for A-first B-safe
-(`proofs/afirst`, 0.14 CPU-hours: 4 chunks of 1.7–2.5 minutes) and 1.1M
-for A-first A-safe (`proofs/adraw`, 0.73 CPU-hours: 24 chunks of 1.3–2.3
-minutes). Each job needs about 1 GB of memory or less, except
-`proofs/bfirst/Data.v`, which needs about 2 GB while it compiles.
+This takes about 0.8 CPU-hours (16 minutes with `-j 3`): Rocq runs the
+checker on 0.57M positions for the B-first claim (`proofs/bfirst`, 0.31
+CPU-hours: 16 chunks of 0.9–1.5 minutes), 0.13M for A-first B-safe
+(`proofs/afirst`, 0.05 CPU-hours: 4 chunks of 0.7–0.8 minutes) and 0.58M
+for A-first A-safe (`proofs/adraw`, 0.38 CPU-hours: 24 chunks of 0.7–1.2
+minutes). Each job needs about 1.3 GB of memory or less.
 
 For each theorem in `proofs/results/Results.v`, the build prints the
 assumptions it rests on. The only ones are Rocq's primitive 63-bit integers
@@ -155,19 +155,26 @@ R=rsolver/target/release/rsolver
 C=_build/default/solver/main.exe
 COMMON='TCB_MACRO=1 TCB_FULLOPP=1 TCB_BMACRO=blk,atk2,dmg'
 
+export TCB_JOBS=4
+
 # A plays first: B is safe, so A can't force a win
-env $COMMON TCB_OT=10 TCB_OTT=20 TCB_SAVE=tables/bsafe-afirst-10-full $R fix safe B 10 10 100 A
-TCB_ROUNDS=2 $C certify-safe-export tables/bsafe-afirst-10-full A proofs/afirst 4 200
+env $COMMON TCB_OT=9 TCB_OTT=20 TCB_SAVE=tables/bsafe-afirst-ot9 $R fix safe B 10 10 100 A
+TCB_ROUNDS=4 $C certify-safe-export tables/bsafe-afirst-ot9 A proofs/afirst 4 200
 
 # B plays first: B wins
-env $COMMON TCB_RANKS=1 TCB_OT=14 TCB_OTT=14 TCB_SAVE=tables/bwin-bfirst-14-full $R fix win B 4 14 100 B
-TCB_ROUNDS=1 $C certify-win-export tables/bwin-bfirst-14-full B proofs/bfirst 16 200
+env $COMMON TCB_RANKS=1 TCB_OT=12 TCB_OTT=12 TCB_SAVE=tables/bwin-bfirst-12-full $R fix win B 4 12 100 B
+TCB_ROUNDS=4 $C certify-win-export tables/bwin-bfirst-12-full B proofs/bfirst 16 200
 
 # A plays first: A is safe (one unbounded A Walker, lines c + b n)
-env TCB_BIG=1 TCB_BIGCHECK=1 TCB_MACRO=1 TCB_FULLOPP=1 TCB_NOBOUND=1 TCB_OT=6 TCB_OTT=6 \
-  TCB_AMACRO=atk2,pump,order,dmg TCB_SAVE=tables/asafe-afirst-big $R fix safe A 20 8 100 A
-$C certify-a tables/asafe-afirst-big A tables/asafe-afirst-big.entries
-TCB_M=64 TCB_FUEL=200 $C certify-a-export tables/asafe-afirst-big.entries A proofs/adraw 24
+env TCB_BIG=1 TCB_BIGCHECK=1 TCB_MACRO=1 TCB_FULLOPP=1 TCB_NOBOUND=1 TCB_OT=5 TCB_OTT=5 \
+  TCB_AMACRO=atk2,pump,order,dmg TCB_SAVE=tables/asafe-afirst-big-o5 $R fix safe A 20 8 100 A
+export TCB_HB=6 TCB_OTT=5
+$C certify-a tables/asafe-afirst-big-o5 A tables/adraw-0.entries
+for r in 1 2 3 4 5 6; do
+  TCB_PREV=tables/adraw-$((r - 1)).entries $C certify-a tables/asafe-afirst-big-o5 A tables/adraw-$r.entries
+done
+# the smallest round (here adraw-6: 0.58M entries)
+TCB_M=64 TCB_FUEL=200 $C certify-a-export tables/adraw-6.entries A proofs/adraw 24
 ```
 
 `main.exe rechunk proofs/afirst 4` (or `proofs/bfirst 16`) checks an exported
@@ -176,17 +183,26 @@ leaving `Data.v.xz` as it is.
 
 The export keeps only the positions the check of the opening needs, runs
 the same check as Rocq (the checkers extracted to OCaml) and writes the
-Rocq files, with the chunks cut by the work the check does on each entry.
+Rocq files, with the chunks cut by the work the check does on each entry
+(Rocq's time estimated from the nodes, moves and lookups of the check,
+with coefficients fitted to a full build). The tables store each position
+with A's two Walkers in one order, sorted as Rocq's lookups sort them
+(`Sym.normA`).
 It follows the check from the opening, choosing the protagonist's moves so
 that their turn starts need as few new entries as possible, and a lookup
 may answer with the same position at another A life (more A life for B's
 tables, less for A's), so one entry serves several. `TCB_ROUNDS=N` runs
-this N more times, preferring the entries the previous run used. None of
-these choices is trusted: Rocq tries every move and checks every entry.
+this N more times, preferring the entries the previous run used
+(`TCB_PREV=ENTRIES` does the same for `certify-a`, from a previous run's
+entries). The B-first records get the smallest ranks their checks allow
+(`TCB_RERANK=0` keeps the solver's order). None of these choices is
+trusted: Rocq tries every move and checks every entry.
 For the A-safe table these are two steps: `certify-a` collects the
 entries (choosing A's moves) and `certify-a-export` checks them again
 exactly as Rocq will, with A trying every move (its attacks in reverse
-order).
+order). The entries `certify-a` collects depend a little on `TCB_JOBS`
+(its workers see each other's new entries only between layers) and vary
+from round to round; the shipped table is the smallest round.
 
 `REDUCTION.md` explains how the search space was reduced to make these
 tables small enough to compute.

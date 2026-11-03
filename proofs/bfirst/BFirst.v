@@ -21,11 +21,11 @@ Require Chunk013.
 Require Chunk014.
 Require Chunk015.
 
-Definition bounds : list int := [0; 45625; 76892; 117988; 143365; 172568; 201983; 228921; 262464; 290101; 320731; 355190; 400255; 432558; 482207; 518111; 576224]%uint63.
+Definition bounds : list int := [0; 45504; 76552; 117756; 142797; 171459; 201172; 227992; 261422; 288524; 319257; 353533; 398525; 430692; 480171; 515974; 573869]%uint63.
 
 Theorem b_first_b_wins_proved : b_first_b_wins.
 Proof.
-  apply (table_wins H ott tt fuel K1 K2 RV bounds 338 17).
+  apply (table_wins H ott tt fuel K1 K2 RV bounds 331 17).
   - exact (conj Chunk000.chunk (conj Chunk001.chunk (conj Chunk002.chunk (conj Chunk003.chunk (conj Chunk004.chunk (conj Chunk005.chunk (conj Chunk006.chunk (conj Chunk007.chunk (conj Chunk008.chunk (conj Chunk009.chunk (conj Chunk010.chunk (conj Chunk011.chunk (conj Chunk012.chunk (conj Chunk013.chunk (conj Chunk014.chunk (conj Chunk015.chunk (I))))))))))))))))).
   - reflexivity.
   - vm_compute. reflexivity.

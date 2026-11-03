@@ -2,5 +2,5 @@
 From Stdlib Require Import Uint63 PArray List Arith.
 From TCB.Proofs Require Import Packed.
 Require Import Data.
-Lemma chunk : exists f, range_ok (record_ok H ott tt fuel K1 K2 RV) f 400255 432558 = true.
-Proof. exists 32303. vm_cast_no_check (eq_refl true). Qed.
+Lemma chunk : exists f, range_ok (record_ok H ott tt fuel K1 K2 RV) f 398525 430692 = true.
+Proof. exists 32167. vm_cast_no_check (eq_refl true). Qed.
