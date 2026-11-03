@@ -1199,3 +1199,292 @@ Proof.
   intros p s t H. induction H as [s | s u t Hu _ IH]; intros Hs; [exact Hs |].
   apply IH. apply (safe_sym p s u Hu Hs).
 Qed.
+
+(** ** Closing safe sets under [Sym], with [Mono]'s life closures *)
+
+Lemma Sym_bump : forall p d s t, Sym s t -> Sym (bump p d s) (bump p d t).
+Proof.
+  intros p d s t [-> | (Hlen & c' & Hc & ->)]; [left; reflexivity |].
+  destruct s as [act ft a b c pd]. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *.
+  destruct p; unfold bump, bump_side, map_side, get_side, set_side; cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend];
+    (apply SymX_mk; [destruct a; exact Hlen | destruct a; reflexivity | exact Hc]).
+Qed.
+
+Lemma Sym_unbump : forall p d s t, Sym (bump p d s) t -> exists t0, t = bump p d t0 /\ Sym s t0.
+Proof.
+  intros p d s t [-> | (Hlen & c' & Hc & ->)]; [exists s; split; [reflexivity | left; reflexivity] |].
+  destruct s as [act ft a b c pd].
+  exists (mkState act ft (sw_side a) b c' pd).
+  destruct p; unfold bump, bump_side, map_side, get_side, set_side in *;
+    cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *;
+    (split; [destruct a; reflexivity | apply SymX_mk; [destruct a; exact Hlen | reflexivity | exact Hc]]).
+Qed.
+
+Lemma Sym_more_thop : forall p u v s t, Sym s t -> Sym (more_thop p u v s) (more_thop p u v t).
+Proof.
+  intros p u v s t [-> | (Hlen & c' & Hc & ->)]; [left; reflexivity |].
+  destruct s as [act ft a b c pd]. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *.
+  destruct p; unfold more_thop, map_side, get_side, set_side; cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend];
+    (apply SymX_mk; [destruct a; exact Hlen | destruct a; reflexivity | exact Hc]).
+Qed.
+
+(** As [Mono.safe_set_down], closed under [Sym] as well: the opponent [q]
+    may have more life, and A's Walkers may be in either order. *)
+Theorem safe_set_down_sym : forall q S, (forall s, S s -> safe_step (opp q) (down q (symc S)) s) ->
+  safe_set (opp q) (down q (symc S)).
+Proof.
+  intros q S HS. apply safe_set_down. intros s (s0 & Hs0 & Hsy).
+  apply (safe_step_syms (opp q) _ s0 s); [| exact Hsy | apply HS; exact Hs0].
+  intros x y [Hw | (d & Hd)] Hxy.
+  - left. rewrite (Sym_winner _ _ Hxy). exact Hw.
+  - right. exists d. apply (symc_sym S (bump q d x)); [exact Hd | apply Sym_bump; exact Hxy].
+Qed.
+
+(** As [Mono.safe_set_up], closed under [Sym] as well. *)
+Theorem safe_set_up_sym : forall p S, (forall s, S s -> safe_step p (up p (symc S)) s) ->
+  safe_set p (up p (symc S)).
+Proof.
+  intros p S HS. apply safe_set_up. intros s (s0 & Hs0 & Hsy).
+  apply (safe_step_syms p _ s0 s); [| exact Hsy | apply HS; exact Hs0].
+  intros x y (d & x0 & -> & Hx0) Hxy.
+  destruct (Sym_unbump p d x0 y Hxy) as (y0 & -> & Hy0).
+  exists d, y0. split; [reflexivity |]. apply (symc_sym S x0); assumption.
+Qed.
+
+(** ** Swapping and sorting A's Walkers *)
+
+Definition sw_cmb (act : player) (c : combat) : combat :=
+  match act with
+  | PA => mkCombat (map swi c.(atk)) c.(atk_thop) c.(blk) c.(trades)
+  | PB => mkCombat c.(atk) c.(atk_thop) (map (map ren_b) c.(blk)) c.(trades)
+  end.
+
+(** Swap A's first two Walkers, renaming the combat; nothing to do with
+    fewer than two. *)
+Definition swapA (s : state) : state :=
+  if 2 <=? length s.(sideA).(bf) then
+    mkState s.(active) s.(first_turn) (sw_side s.(sideA)) s.(sideB) (sw_cmb s.(active) s.(cmb)) s.(pend)
+  else s.
+
+Lemma cmb_rel_sw_cmb : forall act pd c, cmb_rel act pd c (sw_cmb act c).
+Proof.
+  intros [] pd [atk k blk tr]; (split; [reflexivity | split; [reflexivity |]]); cbn.
+  - left. split; reflexivity.
+  - split; [reflexivity |]. destruct pd; cbn; try reflexivity.
+    induction blk as [| bs blk IH]; constructor; [reflexivity | exact IH].
+Qed.
+
+Theorem Sym_swapA : forall s, Sym s (swapA s).
+Proof.
+  intros [act ft a b c pd]. unfold swapA.
+  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
+  destruct (Nat.leb_spec 2 (length a.(bf))) as [Hl | Hl]; [| left; reflexivity].
+  apply SymX_mk; [exact Hl | reflexivity | apply cmb_rel_sw_cmb].
+Qed.
+
+Lemma swapA_swapA : forall s, swapA (swapA s) = s.
+Proof.
+  intros [act ft a b [atk k blk tr] pd]. unfold swapA.
+  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
+  destruct (Nat.leb_spec 2 (length a.(bf))) as [Hl | Hl].
+  - cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
+    rewrite length_sw_side, (proj2 (Nat.leb_le _ _) Hl), sw_side_sw_side.
+    destruct act; cbn; [rewrite map_swi_swi | rewrite map_map, (map_ext _ _ map_ren_b_ren_b), map_id];
+      reflexivity.
+  - cbn [Model.sideA]. rewrite (proj2 (Nat.leb_gt _ _) Hl). reflexivity.
+Qed.
+
+Lemma Sym_swapA' : forall s, Sym (swapA s) s.
+Proof. intros s. apply Sym_sym, Sym_swapA. Qed.
+
+(** The order of the normal form: by counters, then untapped before tapped,
+    then not sick before sick (the solvers' [compare] on Walkers). *)
+Definition wcode (w : walker) : nat := 4 * w.(counters) + 2 * Nat.b2n w.(wtapped) + Nat.b2n w.(sick).
+
+Definition walker_ltb (v w : walker) : bool := wcode v <? wcode w.
+
+Lemma walker_ltb_spec : forall v w, walker_ltb v w = true <->
+  v.(counters) < w.(counters) \/
+  v.(counters) = w.(counters) /\
+  (2 * Nat.b2n v.(wtapped) + Nat.b2n v.(sick) < 2 * Nat.b2n w.(wtapped) + Nat.b2n w.(sick)).
+Proof.
+  intros [c t k] [c' t' k']. unfold walker_ltb, wcode. cbn [Model.counters Model.wtapped Model.sick]. rewrite Nat.ltb_lt.
+  destruct t, k, t', k'; cbn; lia.
+Qed.
+
+(** A's first two Walkers are out of order. *)
+Definition unsorted (l : list walker) : bool :=
+  match l with w0 :: w1 :: _ => walker_ltb w1 w0 | _ => false end.
+
+Definition normA (s : state) : state := if unsorted s.(sideA).(bf) then swapA s else s.
+
+Theorem Sym_normA : forall s, Sym s (normA s).
+Proof. intros s. unfold normA. destruct (unsorted _); [apply Sym_swapA | left; reflexivity]. Qed.
+
+Lemma normA_cases : forall s, normA s = s \/ normA s = swapA s.
+Proof. intros s. unfold normA. destruct (unsorted _); auto. Qed.
+
+Lemma normA_sorted : forall s, unsorted (normA s).(sideA).(bf) = false.
+Proof.
+  intros [act ft a b c pd]. unfold normA. cbn [Model.sideA].
+  destruct a as [la ca pa hwa hea [| w0 [| w1 r]] ea tua tta liba gya];
+    cbn [unsorted Model.bf]; try reflexivity.
+  destruct (walker_ltb w1 w0) eqn:E; [| exact E].
+  unfold swapA, sw_side, set_bf. cbn [Model.sideA Model.bf length Nat.leb swap01 unsorted].
+  unfold walker_ltb in *. apply Nat.ltb_lt in E. apply Nat.ltb_ge. lia.
+Qed.
+
+(** ** Compatibility with the checkers' abstractions *)
+
+Ltac st_cbn :=
+  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend Model.life Model.city
+    Model.pool Model.hand_w Model.hand_e Model.bf Model.elixir_bf Model.thop_u Model.thop_t Model.library
+    Model.gy_w].
+
+Ltac dle2 := repeat match goal with |- context [2 <=? ?x] => destruct (2 <=? x) end.
+
+Lemma swapA_bump : forall p d s, swapA (bump p d s) = bump p d (swapA s).
+Proof.
+  intros [] d [act ft [] [] c pd]; unfold swapA, bump, bump_side, map_side, get_side, set_side, set_life;
+    st_cbn; dle2; reflexivity.
+Qed.
+
+Lemma swapA_more_thop : forall p u v s, swapA (more_thop p u v s) = more_thop p u v (swapA s).
+Proof.
+  intros [] u v [act ft [] [] c pd]; unfold swapA, more_thop, map_side, get_side, set_side, set_thop_u, set_thop_t;
+    st_cbn; dle2; reflexivity.
+Qed.
+
+Lemma normA_bump : forall p d s, normA (bump p d s) = bump p d (normA s).
+Proof.
+  intros p d s. unfold normA. rewrite swapA_bump.
+  destruct p, s as [act ft [] [] c pd]; cbn; destruct (unsorted _); reflexivity.
+Qed.
+
+Lemma normA_more_thop : forall p u v s, normA (more_thop p u v s) = more_thop p u v (normA s).
+Proof.
+  intros p u v s. unfold normA. rewrite swapA_more_thop.
+  destruct p, s as [act ft [] [] c pd]; cbn; destruct (unsorted _); reflexivity.
+Qed.
+
+Lemma winner_swapA : forall s, winner (swapA s) = winner s.
+Proof. intros s. apply Sym_winner, Sym_swapA. Qed.
+
+Lemma to_move_swapA : forall s, to_move (swapA s) = to_move s.
+Proof. intros s. apply Sym_to_move, Sym_swapA. Qed.
+
+Lemma pend_swapA : forall s, (swapA s).(pend) = s.(pend).
+Proof. intros s. unfold swapA. destruct (2 <=? _); reflexivity. Qed.
+
+Lemma active_swapA : forall s, (swapA s).(active) = s.(active).
+Proof. intros s. unfold swapA. destruct (2 <=? _); reflexivity. Qed.
+
+Lemma sideB_swapA : forall s, (swapA s).(sideB) = s.(sideB).
+Proof. intros s. unfold swapA. destruct (2 <=? _); reflexivity. Qed.
+
+Lemma is_turn_start_swapA : forall s, is_turn_start (swapA s) = is_turn_start s.
+Proof. intros s. unfold is_turn_start. rewrite pend_swapA, active_swapA. reflexivity. Qed.
+
+Lemma Forall2_swap01 : forall {X Y} (P : X -> Y -> Prop) l l', Forall2 P l l' -> Forall2 P (swap01 l) (swap01 l').
+Proof.
+  intros X Y P l l' H. destruct H as [| x y l l' Hxy H]; [constructor |].
+  destruct H as [| x' y' l l' Hxy' H]; cbn; repeat constructor; assumption.
+Qed.
+
+(** *** [Checker] (B-safety and B-wins certificates) *)
+
+Lemma key_swapA : forall H tt s, Checker.key H tt (swapA s) = swapA (Checker.key H tt s).
+Proof.
+  intros H tt [act ft [] [] c pd]. unfold swapA, Checker.key, sw_side, set_bf, set_gy_w, set_life.
+  st_cbn. rewrite length_map. dle2; st_cbn; rewrite ?map_swap01; reflexivity.
+Qed.
+
+Lemma entry_swapA : forall s v, Checker.entry (swapA s) v = swapA (Checker.entry s v).
+Proof.
+  intros [act ft [] [] c pd] v. unfold swapA, Checker.entry, map_side, get_side, set_side, set_life.
+  st_cbn. dle2; reflexivity.
+Qed.
+
+Lemma R_swapA : forall H s t, Checker.R H s t -> Checker.R H (swapA s) (swapA t).
+Proof.
+  intros H [act ft a b c pd] [act' ft' a' b' c' pd'] HR.
+  pose proof HR as (E1 & E2 & E3 & E4 & Hn & HA & HB).
+  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *. subst act' ft' c' pd'.
+  pose proof HA as (a1 & a2 & a3 & a4 & a5 & a6 & a7 & a8 & a9 & a10 & a11 & a12 & a13).
+  unfold swapA. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
+  rewrite <- (Forall2_length a11). destruct (2 <=? length a.(bf)); [| exact HR].
+  unfold Checker.R. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
+  repeat (split; [reflexivity |]). split; [exact Hn |]. split; [| exact HB].
+  destruct a, a'; unfold sw_side, set_bf, Checker.sideA_rel in *. cbn in *.
+  repeat split; auto. apply Forall2_swap01. exact a11.
+Qed.
+
+(** A certificate state [s] that abstracts a real state [t] still does after
+    sorting, against [t] with its Walkers in the same order as [s]'s. *)
+Theorem R_normA : forall H s t, Checker.R H s t -> exists t', Sym t t' /\ Checker.R H (normA s) t'.
+Proof.
+  intros H s t HR. unfold normA. destruct (unsorted _).
+  - exists (swapA t). split; [apply Sym_swapA | apply R_swapA; exact HR].
+  - exists t. split; [left; reflexivity | exact HR].
+Qed.
+
+(** *** [CheckerA] (A-safety certificates) *)
+
+Lemma normA_swapA : forall Hb tt s, CheckerA.norm Hb tt (swapA s) = swapA (CheckerA.norm Hb tt s).
+Proof.
+  intros Hb tt [act ft [] [] c pd]. unfold swapA, CheckerA.norm, CheckerA.cut_a, sw_side, set_bf, set_thop_u, set_thop_t.
+  st_cbn. dle2; reflexivity.
+Qed.
+
+Lemma keyA_swapA : forall Hb tt s, CheckerA.key Hb tt (swapA s) = swapA (CheckerA.key Hb tt s).
+Proof.
+  intros Hb tt [act ft [] [] c pd]. unfold swapA, CheckerA.key, CheckerA.norm, CheckerA.cut_a, sw_side,
+    set_bf, set_thop_u, set_thop_t, set_gy_w, set_life.
+  st_cbn. dle2; reflexivity.
+Qed.
+
+Lemma entryA_swapA : forall m s, CheckerA.entry m (swapA s) = swapA (CheckerA.entry m s).
+Proof.
+  intros m [act ft [] [] c pd]. unfold swapA, CheckerA.entry, map_side, get_side, set_side, set_life.
+  st_cbn. dle2; reflexivity.
+Qed.
+
+Lemma bigs_swap01 : forall K l, CheckerA.bigs K (swap01 l) = CheckerA.bigs K l.
+Proof. intros K [| a [| b r]]; unfold CheckerA.bigs; cbn; try reflexivity. destruct (_ =? K), (_ =? K); reflexivity. Qed.
+
+Lemma Forall_swap01 : forall {X} (P : X -> Prop) l, Forall P (swap01 l) <-> Forall P l.
+Proof.
+  intros X P l. split; intros H; rewrite Forall_forall in *; intros x Hx; apply H.
+  - exact (Permutation_in x (Permutation_sym (perm_swap01 l)) Hx).
+  - exact (Permutation_in x (perm_swap01 l) Hx).
+Qed.
+
+Lemma swi_inj : forall i j, swi i = swi j -> i = j.
+Proof. intros i j E. rewrite <- (swi_swi i), <- (swi_swi j), E. reflexivity. Qed.
+
+Lemma RA_swapA : forall K Hb n s t, CheckerA.RA K Hb n s t -> CheckerA.RA K Hb n (swapA s) (swapA t).
+Proof.
+  intros K Hb n [act ft a b c pd] [act' ft' a' b' c' pd'] HR.
+  pose proof HR as (E1 & E2 & E3 & E4 & Hn & HA & HB & Hd).
+  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *. subst act' ft' c' pd'.
+  pose proof HA as (a1 & a2 & a3 & a4 & a5 & a6 & a7 & a8 & a9 & a10 & a11 & a12 & a13 & a14 & a15).
+  unfold swapA. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
+  rewrite <- (Forall2_length a11). destruct (2 <=? length a.(bf)); [| exact HR].
+  unfold CheckerA.RA. cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend].
+  repeat (split; [reflexivity |]). split; [exact Hn |]. split; [| split; [exact HB |]].
+  - destruct a, a'; unfold sw_side, set_bf, CheckerA.sideA_rel in *. cbn in *.
+    repeat split; auto.
+    + apply Forall2_swap01. exact a11.
+    + intros Hf. apply a12. apply Forall_swap01. exact Hf.
+    + unfold CheckerA.bigs in *. rewrite (Permutation_length (filter_perm _ _ _ (perm_swap01 _))). exact a13.
+  - destruct act; cbn; [| exact Hd].
+    apply FinFun.Injective_map_NoDup; [exact swi_inj | exact Hd].
+Qed.
+
+Theorem RA_normA : forall K Hb n s t, CheckerA.RA K Hb n s t ->
+  exists t', Sym t t' /\ CheckerA.RA K Hb n (normA s) t'.
+Proof.
+  intros K Hb n s t HR. unfold normA. destruct (unsorted _).
+  - exists (swapA t). split; [apply Sym_swapA | apply RA_swapA; exact HR].
+  - exists t. split; [left; reflexivity | exact HR].
+Qed.
