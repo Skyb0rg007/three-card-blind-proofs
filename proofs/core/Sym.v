@@ -33,7 +33,8 @@
 From Stdlib Require Import List Bool Arith Lia Permutation.
 Import ListNotations.
 From TCB.Spec Require Import Model Game Claims.
-From TCB.Proofs Require Import GameFacts Mono Preservation.
+From TCB.Proofs Require Import GameFacts Mono Preservation Checker Saturation.
+From TCB.Proofs Require CheckerA.
 
 (** ** Renaming indices 0 and 1 *)
 
@@ -722,4 +723,479 @@ Proof.
         (split; [reflexivity | split; [reflexivity |]]); (split; [reflexivity |]); cbn [blk_rel].
       * exact Hp.
       * apply perm_exact; assumption.
+Qed.
+
+(** *** Damage assignment orders *)
+
+Lemma product_in : forall {X} (cs : list (list X)) x, Forall2 (fun y c => In y c) x cs -> In x (product cs).
+Proof.
+  intros X cs x H. induction H as [| y c x cs Hy _ IH]; cbn [product fold_right]; [left; reflexivity |].
+  apply in_flat_map. exists y. split; [exact Hy | apply in_map; exact IH].
+Qed.
+
+(** [orders] lists every order. *)
+Lemma orders_fuel_complete : forall {X} dec n (l o : list X),
+  length l = n -> Permutation o l -> In o (orders_fuel dec n l).
+Proof.
+  intros X dec n. induction n as [| n IH]; intros l o Hl Hp.
+  - destruct l; [| discriminate]. symmetry in Hp. apply Permutation_nil in Hp. subst. left. reflexivity.
+  - destruct l as [| y r]; [discriminate |].
+    destruct o as [| x o]; [apply Permutation_nil in Hp; discriminate |].
+    cbn [orders_fuel]. apply in_flat_map.
+    assert (Hx : In x (y :: r)) by (eapply Permutation_in; [exact Hp | left; reflexivity]).
+    exists x. split; [apply nodup_In; exact Hx |]. apply in_map.
+    pose proof (remove_first_perm dec x (y :: r) Hx) as Hr.
+    assert (Ho : Permutation o (remove_first dec x (y :: r))).
+    { apply (Permutation_cons_inv (a := x)). eapply perm_trans; [exact Hp | exact Hr]. }
+    apply IH; [| exact Ho].
+    apply Permutation_length in Hr. cbn [length] in Hr, Hl. lia.
+Qed.
+
+Lemma orders_complete : forall {X} dec (l o : list X), Permutation o l -> In o (orders dec l).
+Proof. intros. apply orders_fuel_complete; auto. Qed.
+
+Lemma sym_order : forall act ft a b c c' os, 2 <= length a.(bf) ->
+  cmb_rel act ChooseOrder c c' ->
+  In (Order os) (moves (mkState act ft a b c ChooseOrder)) ->
+  exists m', In m' (moves (mkState act ft (sw_side a) b c' ChooseOrder)) /\
+    Sym (do_order os (mkState act ft a b c ChooseOrder)) (step (mkState act ft (sw_side a) b c' ChooseOrder) m').
+Proof.
+  intros act ft a b [atk k blk tr] [atk' k' blk' tr'] os Hlen Hc Hin.
+  destruct Hc as (Ek & Etr & Hc). cbn [Model.atk_thop Model.trades Model.atk Model.blk] in Ek, Etr, Hc.
+  subst k' tr'. unfold crossed in Hc. cbn [Model.atk_thop Model.trades Model.atk Model.blk] in Hc.
+  unfold moves, order_moves in *. cbn [Model.cmb Model.blk Model.pend] in *.
+  apply in_map_iff in Hin as (os0 & E & Hos). injection E as ->.
+  destruct act.
+  - destruct Hc as [(-> & ->) | (r & -> & Hr & -> & Hl & ->)].
+    + exists (Order os). split; [apply in_map; exact Hos |].
+      cbn [step Model.pend]. unfold do_order, set_pend, set_cmb. cbn.
+      apply SymX_mk; [exact Hlen | reflexivity |].
+      split; [reflexivity | split; [reflexivity |]]. left. split; reflexivity.
+    + exists (Order (swap01 os)). split.
+      * apply in_map. rewrite map_swap01. apply product_swap01. exact Hos.
+      * cbn [step Model.pend]. unfold do_order, set_pend, set_cmb. cbn.
+        apply SymX_mk; [exact Hlen | reflexivity |].
+        split; [reflexivity | split; [reflexivity |]]. right. exists r. cbn.
+        repeat split; auto. rewrite (length_product _ _ Hos), length_map. exact Hl.
+  - destruct Hc as (-> & Hb). cbn [blk_rel] in Hb.
+    exists (Order (map (map ren_b) os)). split.
+    + apply in_map. apply product_in. apply in_product in Hos.
+      revert os Hos. induction Hb as [| bs bs' l l' Hp _ IH]; intros os Hos;
+        inversion Hos as [| o bs0 os' l0 Ho Hos']; subst; cbn [map]; constructor.
+      * apply orders_complete. apply orders_perm in Ho.
+        eapply perm_trans; [apply Permutation_map; exact Ho | symmetry; exact Hp].
+      * apply IH. exact Hos'.
+    + cbn [step Model.pend]. unfold do_order, set_pend, set_cmb. cbn.
+      apply SymX_mk; [exact Hlen | reflexivity |].
+      split; [reflexivity | split; [reflexivity |]]. split; reflexivity.
+Qed.
+
+(** *** Combat damage *)
+
+Lemma wp_sw : forall a i, 2 <= length a.(bf) -> walker_power (sw_side a) i = walker_power a (swi i).
+Proof.
+  intros [] i H. unfold walker_power, sw_side, set_bf. cbn in *.
+  rewrite map_swap01, nth_swap01 by (rewrite length_map; exact H). reflexivity.
+Qed.
+
+Lemma wp_sw' : forall a i, 2 <= length a.(bf) -> walker_power (sw_side a) (swi i) = walker_power a i.
+Proof. intros a i H. rewrite wp_sw, swi_swi by exact H. reflexivity. Qed.
+
+Lemma tough_sw : forall a x, 2 <= length a.(bf) -> blocker_toughness (sw_side a) (ren_b x) = blocker_toughness a x.
+Proof. intros a [i |] H; cbn [ren_b blocker_toughness]; [apply wp_sw' |]; auto. Qed.
+
+Lemma life_sw : forall a, life (sw_side a) = life a.
+Proof. reflexivity. Qed.
+
+Lemma thop_t_sw : forall a, thop_t (sw_side a) = thop_t a.
+Proof. reflexivity. Qed.
+
+Lemma thop_u_sw : forall a, thop_u (sw_side a) = thop_u a.
+Proof. reflexivity. Qed.
+
+Lemma set_life_sw : forall n a, set_life n (sw_side a) = sw_side (set_life n a).
+Proof. intros n []. reflexivity. Qed.
+
+Lemma set_thop_t_sw : forall n a, set_thop_t n (sw_side a) = sw_side (set_thop_t n a).
+Proof. intros n []. reflexivity. Qed.
+
+Lemma set_thop_u_sw : forall n a, set_thop_u n (sw_side a) = sw_side (set_thop_u n a).
+Proof. intros n []. reflexivity. Qed.
+
+Lemma bury_perm : forall d d' sd, Permutation d d' -> bury d sd = bury d' sd.
+Proof.
+  intros d d' sd Hp. unfold bury. cbv zeta.
+  rewrite (Permutation_length Hp), (list_sum_perm _ _ (Permutation_map (walker_power sd) Hp)),
+    (remove_perm d d' _ Hp).
+  reflexivity.
+Qed.
+
+Ltac proj_cbn :=
+  cbn [Model.life Model.city Model.pool Model.hand_w Model.hand_e Model.bf
+    Model.elixir_bf Model.thop_u Model.thop_t Model.library Model.gy_w] in *.
+
+Lemma bury_swap : forall dead sd, 2 <= length sd.(bf) ->
+  (dies01 dead = true -> bury (map swi dead) (sw_side sd) = bury dead sd) /\
+  (dies01 dead = false -> bury (map swi dead) (sw_side sd) = sw_side (bury dead sd) /\
+                          2 <= length (bury dead sd).(bf)).
+Proof.
+  intros dead sd H.
+  assert (Es : list_sum (map (walker_power (sw_side sd)) (map swi dead)) = list_sum (map (walker_power sd) dead)).
+  { rewrite map_map. f_equal. apply map_ext. intros i. apply wp_sw'. exact H. }
+  destruct (remove_swap dead sd.(bf) H) as [H1 H2].
+  unfold bury. cbv zeta. rewrite Es, length_map.
+  split; [intros E | intros E; destruct (H2 E) as [E2 Hl]].
+  - destruct sd; unfold sw_side, set_bf, set_gy_w, set_thop_u in *; proj_cbn. rewrite (H1 E). reflexivity.
+  - destruct sd; unfold sw_side, set_bf, set_gy_w, set_thop_u in *; proj_cbn. rewrite E2.
+    split; [reflexivity | exact Hl].
+Qed.
+
+Definition rnA (x : nat * list blocker * nat) : nat * list blocker * nat :=
+  (swi (fst (fst x)), snd (fst x), snd x).
+
+Definition rnB (x : nat * list blocker * nat) : nat * list blocker * nat :=
+  (fst (fst x), map ren_b (snd (fst x)), snd x).
+
+Lemma combine_map_l : forall {X Y Z} (f : X -> Z) (a : list X) (b : list Y),
+  combine (map f a) b = map (fun p => (f (fst p), snd p)) (combine a b).
+Proof.
+  intros X Y Z f a. induction a as [| x a IH]; intros [| y b]; cbn; try reflexivity. f_equal. apply IH.
+Qed.
+
+Lemma combine_map_r : forall {X Y Z} (g : Y -> Z) (a : list X) (b : list Y),
+  combine a (map g b) = map (fun p => (fst p, g (snd p))) (combine a b).
+Proof.
+  intros X Y Z g a. induction a as [| x a IH]; intros [| y b]; cbn; try reflexivity. f_equal. apply IH.
+Qed.
+
+Lemma filter_map' : forall {X Y} (f : Y -> bool) (g : X -> Y) l,
+  filter f (map g l) = map g (filter (fun x => f (g x)) l).
+Proof. intros X Y f g l. induction l as [| x l IH]; cbn; [reflexivity |]. destruct (f (g x)); cbn; congruence. Qed.
+
+Lemma flat_map_map' : forall {X Y Z} (f : Y -> list Z) (g : X -> Y) l,
+  flat_map f (map g l) = flat_map (fun x => f (g x)) l.
+Proof. intros X Y Z f g l. induction l as [| x l IH]; cbn; congruence. Qed.
+
+Lemma fights_plain : forall atk blk js k k' tr tr',
+  fights_of (mkCombat (map swi atk) k blk tr) js = map rnA (fights_of (mkCombat atk k' blk tr') js).
+Proof.
+  intros. unfold fights_of. cbn [Model.atk Model.blk].
+  rewrite combine_map_l, combine_map_l. apply map_ext. intros [[i bs] j]. reflexivity.
+Qed.
+
+Lemma fights_rnA_big : forall r bl jl, Forall (fun i => 2 <= i) r ->
+  map rnA (combine (combine r bl) jl) = combine (combine r bl) jl.
+Proof.
+  intros r bl jl Hr. revert bl jl. induction Hr as [| x r Hx _ IH]; intros [| b bl] [| j jl]; cbn; try reflexivity.
+  unfold rnA at 1. cbn [fst snd]. rewrite swi_big by exact Hx. f_equal. apply IH.
+Qed.
+
+Lemma fights_crossed : forall r blk js k k' tr tr', Forall (fun i => 2 <= i) r ->
+  2 <= length blk -> 2 <= length js ->
+  fights_of (mkCombat (0 :: 1 :: r) k (swap01 blk) tr) (swap01 js) =
+  swap01 (map rnA (fights_of (mkCombat (0 :: 1 :: r) k' blk tr') js)).
+Proof.
+  intros r blk js k k' tr tr' Hr Hb Hj. unfold fights_of. cbn [Model.atk Model.blk].
+  destruct blk as [| b0 [| b1 bl]]; cbn in Hb; try lia.
+  destruct js as [| j0 [| j1 jl]]; cbn in Hj; try lia.
+  cbn [swap01 combine map]. rewrite fights_rnA_big by exact Hr. reflexivity.
+Qed.
+
+Lemma fights_B : forall atk blk js k k' tr tr',
+  fights_of (mkCombat atk k (map (map ren_b) blk) tr) js = map rnB (fights_of (mkCombat atk k' blk tr') js).
+Proof.
+  intros. unfold fights_of. cbn [Model.atk Model.blk].
+  rewrite combine_map_r, combine_map_l. apply map_ext. intros [[i bs] j]. reflexivity.
+Qed.
+
+Lemma unblocked_A : forall a a' c c' fs fs',
+  Permutation fs' (map rnA fs) -> (forall i, walker_power a' (swi i) = walker_power a i) ->
+  c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
+  unblocked_of a' c' fs' = unblocked_of a c fs.
+Proof.
+  intros a a' c c' fs fs' Hp Hw E1 E2. unfold unblocked_of. rewrite E1, E2.
+  rewrite (list_sum_perm _ _ (Permutation_map _ Hp)), map_map. do 2 f_equal.
+  apply map_ext. intros [[i bs] j]. cbn. destruct bs; [apply Hw | reflexivity].
+Qed.
+
+Lemma adead_A : forall a a' d fs fs',
+  Permutation fs' (map rnA fs) -> (forall i, walker_power a' (swi i) = walker_power a i) ->
+  Permutation (adead_of a' d fs') (map swi (adead_of a d fs)).
+Proof.
+  intros a a' d fs fs' Hp Hw. unfold adead_of.
+  eapply perm_trans; [apply Permutation_map, filter_perm, Hp |].
+  rewrite filter_map', !map_map.
+  erewrite filter_ext; [erewrite map_ext; [reflexivity |] |].
+  - intros [[i bs] j]. reflexivity.
+  - intros [[i bs] j]. cbn. destruct bs; [reflexivity |]. rewrite Hw. reflexivity.
+Qed.
+
+Lemma killed_A : forall fs fs', Permutation fs' (map rnA fs) -> Permutation (killed_of fs') (killed_of fs).
+Proof.
+  intros fs fs' Hp. unfold killed_of.
+  eapply perm_trans; [apply Permutation_flat_map, Hp |].
+  rewrite flat_map_map'. erewrite flat_map_ext; [reflexivity |]. intros [[i bs] j]. reflexivity.
+Qed.
+
+Lemma unblocked_B : forall a c c' fs,
+  c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
+  unblocked_of a c' (map rnB fs) = unblocked_of a c fs.
+Proof.
+  intros a c c' fs E1 E2. unfold unblocked_of. rewrite E1, E2, map_map. do 2 f_equal.
+  apply map_ext. intros [[i bs] j]. cbn. destruct bs; reflexivity.
+Qed.
+
+Lemma adead_B : forall a d d' fs,
+  (forall x, blocker_toughness d' (ren_b x) = blocker_toughness d x) ->
+  adead_of a d' (map rnB fs) = adead_of a d fs.
+Proof.
+  intros a d d' fs Ht. unfold adead_of. induction fs as [| [[i bs] j] fs IH]; [reflexivity |].
+  cbn [map filter rnB fst snd]. destruct bs as [| x bs]; [exact IH |].
+  cbn [map]. rewrite Ht, map_map, (map_ext _ _ Ht).
+  destruct (_ <=? _); cbn [map]; [f_equal |]; exact IH.
+Qed.
+
+Lemma killed_B : forall fs, killed_of (map rnB fs) = map ren_b (killed_of fs).
+Proof.
+  intros fs. unfold killed_of.
+  induction fs as [| [[i bs] j] fs IH]; [reflexivity |]. cbn [map flat_map rnB fst snd].
+  rewrite IH, map_app, firstn_map. reflexivity.
+Qed.
+
+Lemma ddead_B : forall K, flat_map (fun b => match b with BW i => [i] | BT => [] end) (map ren_b K) =
+  map swi (flat_map (fun b => match b with BW i => [i] | BT => [] end) K).
+Proof. intros K. induction K as [| [i |] K IH]; cbn; congruence. Qed.
+
+Lemma count_B : forall K, count_occ blocker_eq_dec (map ren_b K) BT = count_occ blocker_eq_dec K BT.
+Proof.
+  intros K. induction K as [| [i |] K IH]; cbn [map count_occ ren_b]; [reflexivity | | ].
+  - destruct (blocker_eq_dec (BW (swi i)) BT), (blocker_eq_dec (BW i) BT); try discriminate. exact IH.
+  - destruct (blocker_eq_dec BT BT); [| congruence]. rewrite IH. reflexivity.
+Qed.
+
+Ltac fin_damage :=
+  unfold set_pend, set_cmb, set_side, map_side, get_side;
+  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend];
+  rewrite ?life_sw, ?set_life_sw.
+
+Lemma damage_A : forall ft a b c c' js js', 2 <= length a.(bf) ->
+  c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
+  Permutation (fights_of c' js') (map rnA (fights_of c js)) ->
+  Sym (damage_alt js (mkState PA ft a b c ChooseDamage)) (damage_alt js' (mkState PA ft (sw_side a) b c' ChooseDamage)).
+Proof.
+  intros ft a b c c' js js' Hlen E1 E2 Hp.
+  unfold damage_alt, defender. cbn [get_side opp Model.active Model.sideA Model.sideB Model.cmb]. cbv zeta.
+  assert (Hw : forall i, walker_power (sw_side a) (swi i) = walker_power a i) by (intros; apply wp_sw'; exact Hlen).
+  rewrite (unblocked_A a (sw_side a) c c' _ _ Hp Hw E1 E2).
+  pose proof (killed_A _ _ Hp) as Hk.
+  rewrite (bury_perm _ _ _ (Permutation_flat_map (fun b => match b with BW i => [i] | BT => [] end) _ _ Hk)).
+  rewrite (proj1 (Permutation_count_occ blocker_eq_dec _ _) Hk BT), E2.
+  rewrite (bury_perm _ _ _ (adead_A a (sw_side a) b _ _ Hp Hw)).
+  rewrite thop_t_sw, set_thop_t_sw.
+  assert (Hl : 2 <= length (set_thop_t (thop_t a - trades c) a).(bf)) by (destruct a; exact Hlen).
+  destruct (bury_swap (adead_of a b (fights_of c js)) _ Hl) as [H1 H2].
+  destruct (dies01 (adead_of a b (fights_of c js))) eqn:Ed.
+  - rewrite (H1 eq_refl). fin_damage. destruct (_ <=? _); left; reflexivity.
+  - destruct (H2 eq_refl) as [E Hl']. rewrite E. fin_damage.
+    destruct (_ <=? _); (apply SymX_mk; [exact Hl' | reflexivity | apply cmb_rel_none]).
+Qed.
+
+Lemma damage_B : forall ft a b c c' js, 2 <= length a.(bf) ->
+  c'.(atk) = c.(atk) -> c'.(blk) = map (map ren_b) c.(blk) ->
+  c'.(atk_thop) = c.(atk_thop) -> c'.(trades) = c.(trades) ->
+  Sym (damage_alt js (mkState PB ft a b c ChooseDamage)) (damage_alt js (mkState PB ft (sw_side a) b c' ChooseDamage)).
+Proof.
+  intros ft a b [atk k blk tr] [atk' k' blk' tr'] js Hlen Ea Eb E1 E2.
+  cbn [Model.atk Model.blk Model.atk_thop Model.trades] in Ea, Eb, E1, E2. subst atk' blk' k' tr'.
+  unfold damage_alt, defender. cbn [get_side opp Model.active Model.sideA Model.sideB Model.cmb]. cbv zeta.
+  rewrite (fights_B atk blk js k k tr tr).
+  rewrite (unblocked_B b (mkCombat atk k blk tr)) by reflexivity.
+  rewrite (adead_B b a (sw_side a)) by (intros; apply tough_sw; exact Hlen).
+  rewrite killed_B, ddead_B, count_B.
+  rewrite thop_u_sw, set_thop_u_sw.
+  assert (Hl : 2 <= length (set_thop_u (thop_u a - (count_occ blocker_eq_dec
+                  (killed_of (fights_of (mkCombat atk k blk tr) js)) BT + trades (mkCombat atk k blk tr))) a).(bf))
+    by (destruct a; exact Hlen).
+  match goal with |- context [bury (map swi ?dd) (sw_side ?sd)] =>
+    destruct (bury_swap dd sd Hl) as [H1 H2]; destruct (dies01 dd) eqn:Ed end.
+  - rewrite (H1 eq_refl). fin_damage. destruct (_ <=? _); left; reflexivity.
+  - destruct (H2 eq_refl) as [E Hl']. rewrite E. fin_damage.
+    destruct (_ <=? _); (apply SymX_mk; [cbn; exact Hl' | reflexivity | apply cmb_rel_none]).
+Qed.
+
+Lemma sym_damage : forall act ft a b c c' js, 2 <= length a.(bf) ->
+  cmb_rel act ChooseDamage c c' ->
+  In (Assign js) (moves (mkState act ft a b c ChooseDamage)) ->
+  exists m', In m' (moves (mkState act ft (sw_side a) b c' ChooseDamage)) /\
+    Sym (do_damage js (mkState act ft a b c ChooseDamage)) (step (mkState act ft (sw_side a) b c' ChooseDamage) m').
+Proof.
+  intros act ft a b [atk k blk tr] [atk' k' blk' tr'] js Hlen Hc Hin.
+  destruct Hc as (Ek & Etr & Hc). cbn [Model.atk_thop Model.trades Model.atk Model.blk] in Ek, Etr, Hc.
+  subst k' tr'. unfold crossed in Hc. cbn [Model.atk_thop Model.trades Model.atk Model.blk] in Hc.
+  unfold moves, damage_moves, defender in *.
+  cbn [get_side opp Model.active Model.sideA Model.sideB Model.pend Model.cmb Model.atk Model.blk] in *.
+  apply in_map_iff in Hin as (js0 & E & Hjs). injection E as ->.
+  cbn [step Model.pend]. rewrite !damage_alt_eq.
+  destruct act; cbn [get_side opp Model.sideA Model.sideB Model.cmb Model.atk Model.blk] in *.
+  - destruct Hc as [(-> & ->) | (r & -> & Hr & -> & Hl & ->)].
+    + exists (Assign js). split.
+      * apply in_map. rewrite map_map, (map_ext _ _ (fun i => wp_sw' a i Hlen)). exact Hjs.
+      * apply damage_A; [exact Hlen | reflexivity | reflexivity |].
+        rewrite (fights_plain atk blk js k k tr tr). reflexivity.
+    + assert (Hjl : 2 <= length js).
+      { rewrite (length_product _ _ Hjs), !length_map, length_combine, length_map. cbn [length]. lia. }
+      exists (Assign (swap01 js)). split.
+      * apply in_map.
+        assert (Ep : combine (map (walker_power (sw_side a)) (0 :: 1 :: r)) (swap01 blk) =
+                     swap01 (combine (map (walker_power a) (0 :: 1 :: r)) blk)).
+        { rewrite <- combine_swap01 by (cbn [map length]; lia). f_equal. cbn [map swap01].
+          rewrite !wp_sw by exact Hlen. cbn [swi]. do 2 f_equal. apply map_ext_in. intros i Hi.
+          rewrite wp_sw by exact Hlen. rewrite swi_big; [reflexivity |].
+          rewrite Forall_forall in Hr. apply Hr. exact Hi. }
+        rewrite Ep, map_swap01. apply product_swap01. exact Hjs.
+      * apply damage_A; [exact Hlen | reflexivity | reflexivity |].
+        rewrite (fights_crossed r blk js k k tr tr Hr Hl Hjl). apply perm_swap01.
+  - destruct Hc as (-> & Hb). cbn [blk_rel] in Hb. subst blk'.
+    exists (Assign js). split.
+    + apply in_map. rewrite combine_map_r, map_map.
+      erewrite map_ext; [exact Hjs |]. intros [p bs]. cbn [fst snd].
+      rewrite map_map, (map_ext _ _ (fun x => tough_sw a x Hlen)). reflexivity.
+    + apply damage_B; auto.
+Qed.
+
+(** *** Every step *)
+
+Lemma SymX_step : forall s t m, SymX s t -> In m (moves s) ->
+  exists m', In m' (moves t) /\ Sym (step s m) (step t m').
+Proof.
+  intros [act ft a b c pd] t m (Hlen & c' & Hc & ->) Hin.
+  cbn [Model.active Model.first_turn Model.sideA Model.sideB Model.cmb Model.pend] in *.
+  destruct pd as [st p passed | | | | | st p cards | w].
+  - exists (mv_win p m). split; [eapply sym_window_moves; [exact Hlen | exact Hin] | apply sym_window_step; assumption].
+  - pose proof Hin as Hm. unfold moves, attack_moves in Hm. cbn [Model.pend] in Hm.
+    apply in_flat_map in Hm as (ws & _ & Hm). apply in_map_iff in Hm as (k & <- & _).
+    apply sym_attack; assumption.
+  - pose proof Hin as Hm. unfold moves, block_moves in Hm. cbn [Model.pend] in Hm.
+    apply in_flat_map in Hm as (wb & _ & Hm). apply in_flat_map in Hm as (tb & _ & Hm).
+    apply in_map_iff in Hm as (tr & <- & _). apply sym_block; assumption.
+  - pose proof Hin as Hm. unfold moves, order_moves in Hm. cbn [Model.pend] in Hm.
+    apply in_map_iff in Hm as (os & <- & _). apply sym_order; assumption.
+  - pose proof Hin as Hm. unfold moves, damage_moves in Hm. cbn [Model.pend] in Hm.
+    apply in_map_iff in Hm as (js & <- & _). apply sym_damage; assumption.
+  - exists m. split; [exact Hin |].
+    unfold moves in Hin. cbn [Model.pend] in Hin. apply in_map_iff in Hin as (lib & <- & _).
+    destruct a as [la ca pa hwa hea bfa ea tua tta liba gya], b; sw_cbn.
+    destruct p; simpl_step; fin_sym.
+  - destruct Hin.
+Qed.
+
+Theorem Sym_step : forall s t m, Sym s t -> In m (moves s) ->
+  exists m', In m' (moves t) /\ Sym (step s m) (step t m').
+Proof.
+  intros s t m [-> | HX] Hin; [exists m; split; [exact Hin | left; reflexivity] |].
+  apply SymX_step; assumption.
+Qed.
+
+(** ** Wins and safety *)
+
+Theorem wins_sym : forall p s t, Sym s t -> wins p s -> wins p t.
+Proof.
+  intros p s t HS Hw. revert t HS.
+  induction Hw as [s Hwin | s m Hnone Hturn Hin Hw IH | s Hnone Hturn Hall IH]; intros t HS.
+  - apply wins_over. rewrite (Sym_winner _ _ HS). exact Hwin.
+  - destruct (Sym_step s t m HS Hin) as (m' & Hin' & HS').
+    apply wins_mine with m'.
+    + rewrite (Sym_winner _ _ HS). exact Hnone.
+    + rewrite (Sym_to_move _ _ HS). exact Hturn.
+    + exact Hin'.
+    + apply IH. exact HS'.
+  - apply wins_theirs.
+    + rewrite (Sym_winner _ _ HS). exact Hnone.
+    + rewrite (Sym_to_move _ _ HS). exact Hturn.
+    + intros m' Hin'. destruct (Sym_step t s m' (Sym_sym _ _ HS) Hin') as (m & Hin & HS').
+      apply (IH m Hin). apply Sym_sym. exact HS'.
+Qed.
+
+(** [Sym] steps, any number of them. *)
+Inductive syms : state -> state -> Prop :=
+| syms_refl s : syms s s
+| syms_step s u t : Sym s u -> syms u t -> syms s t.
+
+Lemma syms_one : forall s t, Sym s t -> syms s t.
+Proof. intros s t H. apply syms_step with t; [exact H | apply syms_refl]. Qed.
+
+Lemma syms_trans : forall s u t, syms s u -> syms u t -> syms s t.
+Proof.
+  intros s u t H1 H2. induction H1 as [s | s v u Hv _ IH]; [exact H2 |].
+  apply syms_step with v; [exact Hv | apply IH; exact H2].
+Qed.
+
+Lemma syms_sym : forall s t, syms s t -> syms t s.
+Proof.
+  intros s t H. induction H as [s | s u t Hu _ IH]; [apply syms_refl |].
+  apply syms_trans with u; [exact IH | apply syms_one, Sym_sym, Hu].
+Qed.
+
+Theorem wins_syms : forall p s t, syms s t -> wins p s -> wins p t.
+Proof.
+  intros p s t H. induction H as [s | s u t Hu _ IH]; intros Hw; [exact Hw |].
+  apply IH. apply (wins_sym p s u Hu Hw).
+Qed.
+
+(** One position of a safe set moves along [Sym], if the successor set is
+    closed under it. *)
+Lemma safe_step_sym : forall p (T : state -> Prop) s t,
+  (forall x y, T x -> Sym x y -> T y) -> Sym s t -> safe_step p T s -> safe_step p T t.
+Proof.
+  intros p T s t HT HS (Hnot & Hmine & Htheirs).
+  split; [rewrite (Sym_winner _ _ HS); exact Hnot |]. split.
+  - intros Hn Hm. rewrite (Sym_winner _ _ HS) in Hn. rewrite (Sym_to_move _ _ HS) in Hm.
+    destruct (Hmine Hn Hm) as (m & Hin & HTm).
+    destruct (Sym_step s t m HS Hin) as (m' & Hin' & HS').
+    exists m'. split; [exact Hin' | apply (HT _ _ HTm HS')].
+  - intros Hn Hm m' Hin'. rewrite (Sym_winner _ _ HS) in Hn. rewrite (Sym_to_move _ _ HS) in Hm.
+    destruct (Sym_step t s m' (Sym_sym _ _ HS) Hin') as (m & Hin & HS').
+    apply (HT _ _ (Htheirs Hn Hm m Hin)). apply Sym_sym. exact HS'.
+Qed.
+
+Lemma safe_step_syms : forall p (T : state -> Prop) s t,
+  (forall x y, T x -> Sym x y -> T y) -> syms s t -> safe_step p T s -> safe_step p T t.
+Proof.
+  intros p T s t HT H. induction H as [s | s u t Hu _ IH]; intros Hs; [exact Hs |].
+  apply IH. apply (safe_step_sym p T s u HT Hu Hs).
+Qed.
+
+(** The positions [Sym]-related to one of [S]. *)
+Definition symc (S : state -> Prop) (t : state) : Prop := exists s, S s /\ syms s t.
+
+Lemma symc_self : forall (S : state -> Prop) t, S t -> symc S t.
+Proof. intros S t H. exists t. split; [exact H | apply syms_refl]. Qed.
+
+Lemma symc_sym : forall (S : state -> Prop) x y, symc S x -> Sym x y -> symc S y.
+Proof.
+  intros S x y (s & Hs & Hx) HS. exists s. split; [exact Hs |].
+  apply syms_trans with x; [exact Hx | apply syms_one, HS].
+Qed.
+
+Theorem safe_set_sym : forall p S, (forall s, S s -> safe_step p (symc S) s) -> safe_set p (symc S).
+Proof.
+  intros p S HS t (s & Hs & Hst).
+  exact (safe_step_syms p (symc S) s t (symc_sym S) Hst (HS s Hs)).
+Qed.
+
+Theorem safe_sym : forall p s t, Sym s t -> safe p s -> safe p t.
+Proof.
+  intros p s t HS (S & HSS & Hs).
+  exists (symc S). split.
+  - apply safe_set_sym. intros x Hx. destruct (HSS x Hx) as (H1 & H2 & H3).
+    split; [exact H1 |]. split.
+    + intros Hn Hm. destruct (H2 Hn Hm) as (m & Hin & Hm'). exists m. split; [exact Hin | apply symc_self, Hm'].
+    + intros Hn Hm m Hin. apply symc_self. apply H3; assumption.
+  - exists s. split; [exact Hs | apply syms_one, HS].
+Qed.
+
+Theorem safe_syms : forall p s t, syms s t -> safe p s -> safe p t.
+Proof.
+  intros p s t H. induction H as [s | s u t Hu _ IH]; intros Hs; [exact Hs |].
+  apply IH. apply (safe_sym p s u Hu Hs).
 Qed.
