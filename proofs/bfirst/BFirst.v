@@ -21,7 +21,7 @@ Require Chunk013.
 Require Chunk014.
 Require Chunk015.
 
-Definition bounds : list int := [0; 45504; 76552; 117756; 142797; 171459; 201172; 227992; 261422; 288524; 319257; 353533; 398525; 430692; 480171; 515974; 573869]%uint63.
+Definition bounds : list int := [0; 49822; 87508; 114788; 149325; 177782; 210596; 237199; 272535; 302484; 335522; 361608; 388544; 428278; 464748; 519407; 573869]%uint63.
 
 Theorem b_first_b_wins_proved : b_first_b_wins.
 Proof.
