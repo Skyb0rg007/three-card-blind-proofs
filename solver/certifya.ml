@@ -506,7 +506,7 @@ let run dir starter outfile p =
   Printf.printf "certify-a %s: %d bases, %d levels; K=%d Hb=%d ott=%d tt=%d M=%d fuel=%d\n%!" dir t.sv.Fix.nb
     t.sv.Fix.nl p.k p.hb p.ott p.tt p.m p.fuel;
   let s0 = init starter in
-  let k0 = a_key p.hb p.tt s0 in
+  let k0 = Certify.canon (a_key p.hb p.tt s0) in
   let c0, b0 = match lk k0 with Some v -> v | None -> failwith "certify-a: the opening has no entry" in
   Printf.printf "opening: line (%d, %d), B has %d life, BIG %b\n%!" c0 b0 s0.sideB.life (a_has_big p.k s0);
   let key_of s =
@@ -818,7 +818,8 @@ let levels dir k1 k2 =
    parts of 2^20 entries, one compressed file per part), CHUNKS files that
    each check a slice of the entries, and ADraw.v, which proves
    [a_first_a_safe] from them. The slices are balanced by the cost of their
-   checks here (nodes searched and lookups made, plus one per entry).
+   checks in Rocq, estimated from the nodes searched, the lookups made and
+   B's life in each entry.
 
    TCB_DRYRUN=1 checks without writing; TCB_RANGE=LO,HI checks only the
    entries in [LO, HI), to measure (it doesn't write). *)
@@ -923,7 +924,7 @@ let export entries starter ~outdir ~chunks p =
   fold (fun l ->
       Scanf.sscanf l "%d %d %d %d" (fun k1 k2 c b -> es.(!j) <- (k1, k2, pack_line (c, b) 0));
       incr j);
-  (* PackedA's order: the key without A's life, then A's life *)
+  (* PackedA's order: the second integer of the key, then the first *)
   Array.sort (fun (a1, a2, _) (b1, b2, _) -> Certify.packed_cmp (a1, a2) (b1, b2)) es;
   let k1s = Array.map (fun (k1, _, _) -> k1) es and k2s = Array.map (fun (_, k2, _) -> k2) es in
   let ls = Array.map (fun (_, _, l) -> l) es in
@@ -932,23 +933,8 @@ let export entries starter ~outdir ~chunks p =
   done;
   Printf.printf "certify-a-export %s: %d entries; K=%d Hb=%d ott=%d tt=%d M=%d fuel=%d (%.1fs)\n%!" entries n p.k
     p.hb p.ott p.tt p.m p.fuel (Unix.gettimeofday () -. t0);
-  (* PackedA.alookup: in the run of [s]'s position, the last entry at
-     [s]'s A life or less *)
-  let lk0 s =
-    let s = Certify.canon s in
-    let k1, k2 = enc s in
-    let rec go f j best =
-      if f = 0 then best
-      else if Certify.in_run k1s k2s j k1 k2 then
-        if Certify.alife k1s.(j) <= Certify.alife k1 then go (f - 1) (j + 1) j else best
-      else best
-    in
-    let j = go 64 (Certify.packed_start k1s k2s k1 k2) n in
-    if j < n then
-      let e = dec (k1s.(j), k2s.(j)) in
-      if Certify.bump_a (Certify.nsub s.sideA.life e.sideA.life) e = s then Some (unpack_line ls.(j)) else None
-    else None
-  in
+  (* PackedA.alookup *)
+  let lk0 s = Option.map (fun j -> unpack_line ls.(j)) (Certify.a_index k1s k2s s) in
   let lookups = ref 0 and nodes = ref 0 and minlife = ref max_int in
   let lk s = incr lookups; lk0 s in
   (* MemoA's hash: any function is sound. [probe] also notes the least life
@@ -976,7 +962,7 @@ let export entries starter ~outdir ~chunks p =
   let cost =
     let fd = Unix.openfile costf [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_TRUNC ] 0o644 in
     Unix.ftruncate fd (8 * max 1 n);
-    let a = Bigarray.array1_of_genarray (Unix.map_file fd Bigarray.int Bigarray.c_layout true [| max 1 n |]) in
+    let a = Bigarray.array1_of_genarray (Unix.map_file fd Bigarray.float64 Bigarray.c_layout true [| max 1 n |]) in
     Unix.close fd;
     a
   in
@@ -1032,7 +1018,10 @@ let export entries starter ~outdir ~chunks p =
               fa.{4 * j} <- !nodes; fa.{(4 * j) + 1} <- !lookups; fa.{(4 * j) + 2} <- !Certify.c_bs;
               fa.{(4 * j) + 3} <- !Certify.c_scan
             end;
-            cost.{j} <- !nodes + !lookups;
+            (* the estimated cost in Rocq, in seconds: a least-squares fit of
+               chunk times in a full build to the nodes searched, the
+               lookups made and B's life in the entry (unary) *)
+            cost.{j} <- (2.5e-5 *. float !nodes) +. (2.8e-5 *. float !lookups) +. (2.7e-5 *. float life);
             packed.{j} <- pack_line (c, b) life
           done;
           close_out oc;
@@ -1040,33 +1029,22 @@ let export entries starter ~outdir ~chunks p =
     in
     for k = 0 to w - 1 do read_lines (name k) (fun line -> print_endline ("failed: " ^ line)) done;
     bad := !bad + Array.fold_left ( + ) 0 r;
-    let nlk = ref 0 in
-    for j = rlo to hi - 1 do nlk := !nlk + cost.{j} done;
-    Printf.printf "  slice %d of %d: %d failed so far, cost %d so far (%.0fs)\n%!" (sl + 1) slices !bad !nlk
+    let nlk = ref 0. in
+    for j = rlo to hi - 1 do nlk := !nlk +. cost.{j} done;
+    Printf.printf "  slice %d of %d: %d failed so far, est. %.0f s in Rocq so far (%.0fs)\n%!" (sl + 1) slices !bad !nlk
       (Unix.gettimeofday () -. t0)
   done;
-  let total = ref 0 in
-  for j = rlo to rhi - 1 do total := !total + cost.{j} done;
+  let total = ref 0. in
+  for j = rlo to rhi - 1 do total := !total +. cost.{j} done;
   let lifes = Array.make 129 0 in
   for j = rlo to rhi - 1 do let l = packed.{j} lsr 20 in lifes.(min l 128) <- lifes.(min l 128) + 1 done;
-  Printf.printf "checked as in Rocq (MemoA.check_m, fuel %d, B's life cut from %d): %d of %d failed, cost %d (%.1fs)\n%!"
+  Printf.printf "checked as in Rocq (MemoA.check_m, fuel %d, B's life cut from %d): %d of %d failed, est. %.0f s in Rocq (%.1fs)\n%!"
     p.fuel p.m !bad (rhi - rlo) !total (Unix.gettimeofday () -. t0);
   Printf.printf "B's life in the entries: %s\n%!"
     (String.concat " " (List.filter (( <> ) "") (Array.to_list (Array.mapi (fun l x -> if x > 0 then Printf.sprintf "%d:%d" l x else "") lifes))));
   for j = rlo to rhi - 1 do ls.(j) <- packed.{j} done;
-  (* the slices for Rocq: [chunks] near-equal shares of the cost *)
-  let bounds =
-    let w = !total + n in
-    let bs = ref [ 0 ] and acc = ref 0 and next = ref 1 in
-    for j = 0 to n - 1 do
-      acc := !acc + cost.{j} + 1;
-      if !next < chunks && !acc * chunks >= !next * w then begin
-        bs := (j + 1) :: !bs;
-        while !next < chunks && !acc * chunks >= !next * w do incr next done
-      end
-    done;
-    List.rev (if List.hd !bs = n then !bs else n :: !bs)
-  in
+  (* the slices for Rocq: [chunks] near-equal shares of the estimated cost *)
+  let bounds = Certify.balance (Array.init n (fun j -> cost.{j})) chunks in
   (match feat with
    | Some f ->
      let oc = open_out f in

@@ -27,21 +27,7 @@ let profile_a entries (p : Certifya.params) =
   let k1s = Array.map (fun (k1, _, _, _) -> k1) es and k2s = Array.map (fun (_, k2, _, _) -> k2) es in
   let lns = Array.map (fun (_, _, c, b) -> (c, b)) es in
   (* PackedA.alookup *)
-  let lk s =
-    let s = Certify.canon s in
-    let k1, k2 = Certify.enc s in
-    let rec go f j best =
-      if f = 0 then best
-      else if Certify.in_run k1s k2s j k1 k2 then
-        if Certify.alife k1s.(j) <= Certify.alife k1 then go (f - 1) (j + 1) j else best
-      else best
-    in
-    let j = go 64 (Certify.packed_start k1s k2s k1 k2) n in
-    if j < n then
-      let e = Certify.dec (k1s.(j), k2s.(j)) in
-      if Certify.bump_a (Certify.nsub s.sideA.life e.sideA.life) e = s then Some lns.(j) else None
-    else None
-  in
+  let lk s = Option.map (fun j -> lns.(j)) (Certify.a_index k1s k2s s) in
   let leaf s c b lo =
     match lk (a_key p.hb p.tt s) with
     | Some (c', b') -> c + (b * lo) <= c' + (b' * lo) && ((not (a_has_big p.k s)) || b <= b')

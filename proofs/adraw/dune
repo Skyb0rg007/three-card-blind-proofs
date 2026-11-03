@@ -6,28 +6,13 @@
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
 
 (rule
- (target DataC1_1.v)
- (deps DataC1_1.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
  (target DataC2_0.v)
  (deps DataC2_0.v.xz)
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
 
 (rule
- (target DataC2_1.v)
- (deps DataC2_1.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
  (target DataCV_0.v)
  (deps DataCV_0.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataCV_1.v)
- (deps DataCV_1.v.xz)
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
 
 (rocq.theory

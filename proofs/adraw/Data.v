@@ -2,17 +2,14 @@
 From Stdlib Require Import Uint63 PArray List Arith ZArith.
 From TCB.Proofs Require Import Packed PackedA.
 Definition K := 21.
-Definition Hb := 7.
-Definition ott := 6.
+Definition Hb := 6.
+Definition ott := 5.
 Definition tt := 8.
 Definition fuel := 200.
 Require Import DataC1_0.
-Require Import DataC1_1.
 Require Import DataC2_0.
-Require Import DataC2_1.
 Require Import DataCV_0.
-Require Import DataCV_1.
-Definition C1 : array (array int) := [| C1_0; C1_1 | C1_0 |].
-Definition C2 : array (array int) := [| C2_0; C2_1 | C2_0 |].
-Definition CV : array (array int) := [| CV_0; CV_1 | CV_0 |].
-Definition N : int := 1077719%uint63.
+Definition C1 : array (array int) := [| C1_0 | C1_0 |].
+Definition C2 : array (array int) := [| C2_0 | C2_0 |].
+Definition CV : array (array int) := [| CV_0 | CV_0 |].
+Definition N : int := 581561%uint63.
