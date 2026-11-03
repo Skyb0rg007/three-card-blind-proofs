@@ -16,7 +16,12 @@
       and when A's first move fails, its whole subtree has been searched in
       vain. The first attack ([Model.attack_moves] lists the empty attack
       first) is the one that fails most often, so [check_m] tries A's
-      attacks in reverse. Any order is sound: A only needs one move. *)
+      attacks in reverse. Any order is sound: A only needs one move.
+    - **A hinted move first.** [ahint s h] (from [s] and its hash [h]) names
+      a move for A to try before the others ([hfirst]); [PackedA] reads it
+      from a table the exporter fills with the moves that work where the
+      first one fails. Nothing is assumed about [ahint]: every move is
+      still tried, so a wrong hint costs time only. *)
 
 From Stdlib Require Import Bool List Arith ZArith Lia.
 From Stdlib Require PrimInt63.
@@ -31,6 +36,24 @@ Definition a_order (s : state) (ms : list move) : list move :=
 
 Lemma a_order_in : forall s ms m, In m (a_order s ms) -> In m ms.
 Proof. intros s ms m. unfold a_order. destruct (pend s); auto. apply in_rev. Qed.
+
+(** A hinted move first: [i] is 0 for no hint, or 1 + the index in [ms]
+    of the move to try first. The hinted move is tried again in its place
+    if it fails (the memo usually answers it then). Any hint is sound: the
+    protagonist only needs one move that works, and every move of the list
+    is still tried. *)
+Definition hfirst (i : nat) (ms : list move) : list move :=
+  match i with
+  | O => ms
+  | S k => match nth_error ms k with Some m => m :: ms | None => ms end
+  end.
+
+Lemma hfirst_in : forall i ms m, In m (hfirst i ms) -> In m ms.
+Proof.
+  intros [| k] ms m; cbn; [auto |].
+  destruct (nth_error ms k) as [x |] eqn:E; [| auto].
+  intros [<- | H]; [exact (nth_error_In _ _ E) | exact H].
+Qed.
 
 (** ** The memo *)
 
@@ -162,6 +185,9 @@ Section Memo.
 Variables K Hb ott tt : nat.
 Variable lookup : state -> option (Z * Z).
 Variable hash : state -> PrimInt63.int.
+(** The move A tries first at a node, from the node's hash ([hfirst]):
+    untrusted, any function is sound. *)
+Variable ahint : state -> PrimInt63.int -> nat.
 
 (** [CheckerA.check_node]'s edge, with the recursive call [rec]. [bs],
     [hb] and [hit] are [blife s], [has_big s] and [is_hit s], computed
@@ -208,7 +234,7 @@ Fixpoint check_m (fuel : nat) (root : bool) (s : state) (c b : Z) (lo : nat) (t 
                 let g := next_m (check_m f false) s c b lo (CheckerA.blife s) (CheckerA.has_big K s) (CheckerA.is_hit K s) in
                 let (r, t) :=
                   match to_move s with
-                  | PA => any_m g (a_order s (moves s)) t
+                  | PA => any_m g (hfirst (ahint s h) (a_order s (moves s))) t
                   | PB => all_m g (moves s) t
                   end in
                 (r, tadd h (ME s c b lo r) t)
@@ -362,12 +388,12 @@ Proof.
       by (destruct (CheckerA.huge_event Hb s); [discriminate | exact (eq_sym Eh)]).
     exact H. }
   assert (Hsearch : forall t0 r0 t0', tree_ok t0 ->
-    (match to_move s with PA => any_m g (a_order s (moves s)) t0 | PB => all_m g (moves s) t0 end) = (r0, t0') ->
+    (match to_move s with PA => any_m g (hfirst (ahint s (hash s)) (a_order s (moves s))) t0 | PB => all_m g (moves s) t0 end) = (r0, t0') ->
     tree_ok t0' /\ (r0 = true -> exists f', CN f' root s c b lo = true)).
   { intros t0 r0 t0' Ht0 Es. destruct (to_move s).
     - destruct (any_m_spec tree_ok g Q _ t0 r0 t0' (fun x t1 r1 t1' _ => Hg x t1 r1 t1') Ht0 Es) as [Ht1 Hr].
       split; [exact Ht1 |]. intros E. destruct (Hr E) as (x & Hx & f' & Hf). exists (S f'). apply Hnode.
-      rewrite some_move_existsb. apply existsb_exists. exists x. split; [exact (a_order_in _ _ _ Hx) | exact Hf].
+      rewrite some_move_existsb. apply existsb_exists. exists x. split; [exact (a_order_in _ _ _ (hfirst_in _ _ _ Hx)) | exact Hf].
     - destruct (all_m_spec tree_ok g Q _ t0 r0 t0' (fun x t1 r1 t1' _ => Hg x t1 r1 t1') Ht0 Es) as [Ht1 Hr].
       split; [exact Ht1 |]. intros E.
       destruct (uniform_fuel (fun f' m => next_g (CN f' false) s c b lo m = true) (moves s)) as [f' Hf];
@@ -375,11 +401,11 @@ Proof.
       + intros f1 f2 x Hle. apply next_g_mono. intros. eapply CN_mono; eauto.
       + exists (S f'). apply Hnode. rewrite all_moves_forallb. apply forallb_forall. exact Hf. }
   assert (Hmemo : forall t0 r0 t0', tree_ok t0 ->
-    (let (r1, t1) := (match to_move s with PA => any_m g (a_order s (moves s)) t0 | PB => all_m g (moves s) t0 end) in
+    (let (r1, t1) := (match to_move s with PA => any_m g (hfirst (ahint s (hash s)) (a_order s (moves s))) t0 | PB => all_m g (moves s) t0 end) in
      (r1, tadd (hash s) (ME s c b lo r1) t1)) = (r0, t0') ->
     tree_ok t0' /\ (r0 = true -> exists f', CN f' root s c b lo = true)).
   { intros t0 r0 t0' Ht0 Es.
-    destruct (match to_move s with PA => any_m g (a_order s (moves s)) t0 | PB => all_m g (moves s) t0 end)
+    destruct (match to_move s with PA => any_m g (hfirst (ahint s (hash s)) (a_order s (moves s))) t0 | PB => all_m g (moves s) t0 end)
       as [r1 t1] eqn:E1.
     injection Es as <- <-. destruct (Hsearch t0 r1 t1 Ht0 E1) as [Ht1 Hres]. split; [| exact Hres].
     intros e He. destruct (tadd_elements _ _ _ _ He) as [-> | He']; [| exact (Ht1 e He')].

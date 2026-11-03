@@ -82,6 +82,13 @@ module S = Hashtbl.Make (struct
     let hash = Hashtbl.hash_param 100 400
   end)
 
+(* MemoA's memo: nodes (state, line, bound). *)
+module HA = Hashtbl.Make (struct
+    type t = state * int * int * int
+    let equal = ( = )
+    let hash = Hashtbl.hash_param 100 400
+  end)
+
 let oracle p lk =
   let memo = H.create 1024 and good = S.create 256 in
   let rec ok root s c b lo =
@@ -836,7 +843,7 @@ let unpack_line v = (((v lsr 8) land 4095) - 2048, v land 255)
 (* PackedA's parts: 2^part_bits entries each. *)
 let part_bits = 20
 
-let write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0 =
+let write_adraw ~outdir ~p ~k1s ~k2s ~ls ~hints ~bounds ~c0 ~b0 =
   let n = Array.length k1s in
   ignore (Sys.command ("mkdir -p " ^ Filename.quote outdir));
   let file name f = let oc = open_out (Filename.concat outdir name) in f oc; close_out oc in
@@ -844,23 +851,28 @@ let write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0 =
   let header = "From Stdlib Require Import Uint63 PArray List Arith ZArith.\nFrom TCB.Proofs Require Import Packed PackedA.\n" in
   let size = 1 lsl part_bits in
   let parts = (n + size - 1) / size in
-  let cols = [ ("C1", k1s); ("C2", k2s); ("CV", ls) ] in
-  let pieces = List.concat_map (fun (c, _) -> List.init parts (fun q -> Printf.sprintf "Data%s_%d" c q)) cols in
-  List.iter (fun (c, a) ->
-      for q = 0 to parts - 1 do
-        let name = Printf.sprintf "Data%s_%d.v" c q in
-        file name (fun oc ->
-            output_string oc (gen ^ "From Stdlib Require Import Uint63 PArray.\n");
-            Printf.fprintf oc "Definition %s_%d : array int := [| " c q;
-            for j = q * size to min n ((q + 1) * size) - 1 do
-              if j > q * size then output_string oc "; ";
-              output_string oc (string_of_int a.(j))
-            done;
-            output_string oc " | 0 : int |]%uint63.\n");
-        (* shipped compressed: integer literals compress about 70 times *)
-        if Sys.command ("xz -9 -f " ^ Filename.quote (Filename.concat outdir name)) <> 0 then
-          failwith "export: xz failed"
-      done)
+  (* each column's parts, as (name, array, first, last + 1); CV ends with
+     the hint table (PackedA.ahints) *)
+  let col c a = List.init parts (fun q -> (Printf.sprintf "%s_%d" c q, a, q * size, min n ((q + 1) * size))) in
+  let cols =
+    [ ("C1", col "C1" k1s); ("C2", col "C2" k2s);
+      ("CV", col "CV" ls @ [ (Printf.sprintf "CV_%d" parts, hints, 0, Array.length hints) ]) ] in
+  let pieces = List.concat_map (fun (_, ps) -> List.map (fun (name, _, _, _) -> "Data" ^ name) ps) cols in
+  List.iter (fun (_, ps) ->
+      List.iter (fun (name, a, lo, hi) ->
+          let fname = Printf.sprintf "Data%s.v" name in
+          file fname (fun oc ->
+              output_string oc (gen ^ "From Stdlib Require Import Uint63 PArray.\n");
+              Printf.fprintf oc "Definition %s : array int := [| " name;
+              for j = lo to hi - 1 do
+                if j > lo then output_string oc "; ";
+                output_string oc (string_of_int a.(j))
+              done;
+              output_string oc " | 0 : int |]%uint63.\n");
+          (* shipped compressed: integer literals compress about 70 times *)
+          if Sys.command ("xz -9 -f " ^ Filename.quote (Filename.concat outdir fname)) <> 0 then
+            failwith "export: xz failed")
+        ps)
     cols;
   file "Data.v" (fun oc ->
       output_string oc (gen ^ header);
@@ -868,11 +880,12 @@ let write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0 =
         "Definition K := %d.\nDefinition Hb := %d.\nDefinition ott := %d.\nDefinition tt := %d.\n\
          Definition fuel := %d.\n" p.k p.hb p.ott p.tt p.fuel;
       List.iter (Printf.fprintf oc "Require Import %s.\n") pieces;
-      List.iter (fun (c, _) ->
+      List.iter (fun (c, ps) ->
           Printf.fprintf oc "Definition %s : array (array int) := [| %s | %s_0 |].\n" c
-            (String.concat "; " (List.init parts (Printf.sprintf "%s_%d" c))) c)
+            (String.concat "; " (List.map (fun (name, _, _, _) -> name) ps)) c)
         cols;
       Printf.fprintf oc "Definition N : int := %d%%uint63.\n" n);
+
   let rec pairs = function a :: (b :: _ as r) -> (a, b) :: pairs r | _ -> [] in
   let ps = pairs bounds in
   let ok = "aentry_ok K Hb ott tt fuel C1 C2 CV N" in
@@ -937,16 +950,58 @@ let export entries starter ~outdir ~chunks p =
   let lk0 s = Option.map (fun j -> unpack_line ls.(j)) (Certify.a_index k1s k2s s) in
   let lookups = ref 0 and nodes = ref 0 and minlife = ref max_int in
   let lk s = incr lookups; lk0 s in
-  (* MemoA's hash: any function is sound. [probe] also notes the least life
-     B has in a state the node steps to (over every move: an upper bound on
-     the life the search needs); [counting] counts the nodes searched. *)
-  let hash s = Hashtbl.hash_param 100 400 s in
+  (* MemoA's hash is Packed.shash (A's move hints are read from it).
+     [probe] also notes the least life B has in a state the node steps to
+     (over every move: an upper bound on the life the search needs);
+     [counting] counts the nodes searched. *)
   let probe s =
     List.iter (fun m -> let l = (a_stepA p.k p.hb p.tt s m).sideB.life in if l < !minlife then minlife := l) (moves s);
-    hash s
+    shash s
   in
-  let counting s = incr nodes; hash s in
-  let check_m h s life c b = fst (a_check_m p.k p.hb p.ott p.tt lk h p.fuel true (a_entry life s) c b 0 MLeaf) in
+  let counting s = incr nodes; shash s in
+  let check_m hints h s life c b =
+    fst (a_check_m p.k p.hb p.ott p.tt lk h (Certify.hint_of hints 0) p.fuel true (a_entry life s) c b 0 MLeaf) in
+  (* A mirror of [check_m] (the same nodes, memo, hash, hints and order of
+     A's moves), for the hint table: [hint] gives a node's hint from its
+     key, and A's nodes note their demands as [Certify.hinted_search] says;
+     those along the moves that work go to [demand]. *)
+  let mirror ~hint ~demand s0 life c0 b0 =
+    let memo = HA.create 256 in
+    let pending = ref [] in
+    let cost () = (25 * !nodes) + (28 * !lookups) in
+    let rec go root s c b lo =
+      match winner s with
+      | Some _ -> false
+      | None ->
+        if (not root) && is_turn_start s then
+          (match lk (a_key p.hb p.tt s) with Some l -> meets p s c b lo l | None -> false)
+        else if a_huge_event p.hb s || a_big_event p.k s then false
+        else begin
+          incr nodes;
+          let hs = hint_key s (shash s) in
+          match HA.find_opt memo (s, c, b, lo) with
+          | Some (r, ds) -> pending := List.rev_append ds !pending; r
+          | None ->
+            let g m = match edge p s c b lo m with `Fail -> false | `Dead -> true | `Go (s', c2, b2, lo2) -> go false s' c2 b2 lo2 in
+            let ms = moves s in
+            let mark = !pending in
+            let r =
+              match to_move s with
+              | PA ->
+                let ao = a_order s ms in
+                let i = hint hs in
+                Certify.hinted_search ~cost pending g hs i ao (hfirst i ao)
+              | PB -> List.for_all g ms
+            in
+            HA.replace memo (s, c, b, lo) (r, if r then Certify.since pending mark else []);
+            r
+        end
+    in
+    let r = go true (a_entry life s0) c0 b0 0 in
+    if r then List.iter (fun (k, i, x) -> demand k i x) !pending;
+    r
+
+  in
   let s0 = init starter in
   let c0, b0 = match lk0 (a_key p.hb p.tt s0) with Some l -> l | None -> failwith "certify-a-export: no opening entry" in
   Printf.printf "opening: line (%d, %d), B has %d life\n%!" c0 b0 s0.sideB.life;
@@ -987,62 +1042,91 @@ let export entries starter ~outdir ~chunks p =
     Unix.close fd;
     a
   in
-  let slices = if rhi - rlo < n then 1 else 32 in
-  let bad = ref 0 in
-  for sl = 0 to slices - 1 do
-    let lo, hi = Par.chunk (rhi - rlo) slices sl in
-    let lo = rlo + lo and hi = rlo + hi in
-    let w = Par.workers (hi - lo) 1000 in
-    let pid = Unix.getpid () in
-    let name k = Filename.concat wdir (Printf.sprintf "export-a-%d-%d" pid k) in
-    let r =
-      Par.map ~dir:wdir w (fun k ->
-          let a, b = Par.chunk (hi - lo) w k in
-          let oc = open_out (name k) in
-          let nb = ref 0 in
-          for j = lo + a to lo + b - 1 do
-            let c, b = unpack_line ls.(j) in
-            let s = dec (k1s.(j), k2s.(j)) in
-            minlife := max_int;
-            let life =
-              if check_m probe s p.m c b then if !minlife = max_int then 1 else max 1 (p.m - !minlife + 1) else p.m in
-            lookups := 0;
-            nodes := 0;
-            Certify.c_bs := 0;
-            Certify.c_scan := 0;
-            if not (check_m counting s life c b) then begin
-              incr nb;
-              Printf.fprintf oc "%d %d %d %d\n" k1s.(j) k2s.(j) c b
-            end;
-            if feat <> None then begin
-              fa.{4 * j} <- !nodes; fa.{(4 * j) + 1} <- !lookups; fa.{(4 * j) + 2} <- !Certify.c_bs;
-              fa.{(4 * j) + 3} <- !Certify.c_scan
-            end;
-            (* the estimated cost in Rocq, in seconds: a least-squares fit of
-               chunk times in a full build to the nodes searched, the
-               lookups made and B's life in the entry (unary) *)
-            cost.{j} <- (2.5e-5 *. float !nodes) +. (2.8e-5 *. float !lookups) +. (2.7e-5 *. float life);
-            packed.{j} <- pack_line (c, b) life
-          done;
-          close_out oc;
-          !nb)
+  (* the estimated cost in Rocq, in seconds: a least-squares fit of chunk
+     times in a full build to the nodes searched, the lookups made and B's
+     life in the entry (unary) *)
+  let weight life = (2.5e-5 *. float !nodes) +. (2.8e-5 *. float !lookups) +. (2.7e-5 *. float life) in
+  (* Every entry checked as Rocq will with the hints [hints]; with [probe_life]
+     (first, with no hints) each entry also gets its life for B. Returns the
+     number of entries that fail. *)
+  let sweep ~probe_life hints =
+    let slices = if rhi - rlo < n then 1 else 32 in
+    let bad = ref 0 in
+    for sl = 0 to slices - 1 do
+      let lo, hi = Par.chunk (rhi - rlo) slices sl in
+      let lo = rlo + lo and hi = rlo + hi in
+      let w = Par.workers (hi - lo) 1000 in
+      let pid = Unix.getpid () in
+      let name k = Filename.concat wdir (Printf.sprintf "export-a-%d-%d" pid k) in
+      let r =
+        Par.map ~dir:wdir w (fun k ->
+            let a, b = Par.chunk (hi - lo) w k in
+            let oc = open_out (name k) in
+            let nb = ref 0 in
+            for j = lo + a to lo + b - 1 do
+              let c, b = unpack_line ls.(j) in
+              let s = dec (k1s.(j), k2s.(j)) in
+              let life =
+                if probe_life then begin
+                  minlife := max_int;
+                  if check_m hints probe s p.m c b then if !minlife = max_int then 1 else max 1 (p.m - !minlife + 1) else p.m
+                end
+                else packed.{j} lsr 20
+              in
+              lookups := 0;
+              nodes := 0;
+              Certify.c_bs := 0;
+              Certify.c_scan := 0;
+              if not (check_m hints counting s life c b) then begin
+                incr nb;
+                Printf.fprintf oc "%d %d %d %d\n" k1s.(j) k2s.(j) c b
+              end;
+              if feat <> None then begin
+                fa.{4 * j} <- !nodes; fa.{(4 * j) + 1} <- !lookups; fa.{(4 * j) + 2} <- !Certify.c_bs;
+                fa.{(4 * j) + 3} <- !Certify.c_scan
+              end;
+              cost.{j} <- weight life;
+              packed.{j} <- pack_line (c, b) life
+            done;
+            close_out oc;
+            !nb)
+      in
+      for k = 0 to w - 1 do read_lines (name k) (fun line -> print_endline ("failed: " ^ line)) done;
+      bad := !bad + Array.fold_left ( + ) 0 r;
+      let nlk = ref 0. in
+      for j = rlo to hi - 1 do nlk := !nlk +. cost.{j} done;
+      Printf.printf "  slice %d of %d: %d failed so far, est. %.0f s in Rocq so far (%.0fs)\n%!" (sl + 1) slices !bad !nlk
+        (Unix.gettimeofday () -. t0)
+    done;
+    !bad
+  in
+  let total () = let x = ref 0. in for j = rlo to rhi - 1 do x := !x +. cost.{j} done; !x in
+  let bad0 = sweep ~probe_life:true [||] in
+  Printf.printf "with no hints: %d of %d failed, est. %.0f s in Rocq (%.1fs)\n%!" bad0 (rhi - rlo) (total ())
+    (Unix.gettimeofday () -. t0);
+  (* A's move hints (Certify.hint_passes), with each entry's life *)
+  let hints =
+    let run ~hint ~demand jj =
+      let j = rlo + jj in
+      let c, b = unpack_line ls.(j) and life = packed.{j} lsr 20 in
+      lookups := 0;
+      nodes := 0;
+      if not (mirror ~hint ~demand (dec (k1s.(j), k2s.(j))) life c b) then failwith "certify-a-export: the mirror fails";
+      weight life
     in
-    for k = 0 to w - 1 do read_lines (name k) (fun line -> print_endline ("failed: " ^ line)) done;
-    bad := !bad + Array.fold_left ( + ) 0 r;
-    let nlk = ref 0. in
-    for j = rlo to hi - 1 do nlk := !nlk +. cost.{j} done;
-    Printf.printf "  slice %d of %d: %d failed so far, est. %.0f s in Rocq so far (%.0fs)\n%!" (sl + 1) slices !bad !nlk
-      (Unix.gettimeofday () -. t0)
-  done;
-  let total = ref 0. in
-  for j = rlo to rhi - 1 do total := !total +. cost.{j} done;
+    Certify.hint_passes ~dir:wdir ~unit:1e-6 (rhi - rlo) run
+  in
+  let hints = if Array.length hints = 0 then [| 0 |] else hints in
+  let bad = sweep ~probe_life:false hints in
+  let total = total () in
   let lifes = Array.make 129 0 in
   for j = rlo to rhi - 1 do let l = packed.{j} lsr 20 in lifes.(min l 128) <- lifes.(min l 128) + 1 done;
-  Printf.printf "checked as in Rocq (MemoA.check_m, fuel %d, B's life cut from %d): %d of %d failed, est. %.0f s in Rocq (%.1fs)\n%!"
-    p.fuel p.m !bad (rhi - rlo) !total (Unix.gettimeofday () -. t0);
+  Printf.printf "checked as in Rocq (MemoA.check_m, fuel %d, B's life cut from %d, %d hint slots): %d of %d failed, est. %.0f s in Rocq (%.1fs)\n%!"
+    p.fuel p.m (Array.length hints) bad (rhi - rlo) total (Unix.gettimeofday () -. t0);
   Printf.printf "B's life in the entries: %s\n%!"
     (String.concat " " (List.filter (( <> ) "") (Array.to_list (Array.mapi (fun l x -> if x > 0 then Printf.sprintf "%d:%d" l x else "") lifes))));
   for j = rlo to rhi - 1 do ls.(j) <- packed.{j} done;
+
   (* the slices for Rocq: [chunks] near-equal shares of the estimated cost *)
   let bounds = Certify.balance (Array.init n (fun j -> cost.{j})) chunks in
   (match feat with
@@ -1057,5 +1141,5 @@ let export entries starter ~outdir ~chunks p =
   Sys.remove featf;
   Sys.remove costf;
   Sys.remove packf;
-  if !bad > 0 || c0 < 20 then failwith "certify-a-export: not writing a failing certificate";
-  if write then write_adraw ~outdir ~p ~k1s ~k2s ~ls ~bounds ~c0 ~b0
+  if bad > 0 || c0 < 20 then failwith "certify-a-export: not writing a failing certificate";
+  if write then write_adraw ~outdir ~p ~k1s ~k2s ~ls ~hints ~bounds ~c0 ~b0

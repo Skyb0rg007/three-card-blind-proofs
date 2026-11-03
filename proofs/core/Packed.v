@@ -140,6 +140,28 @@ Definition shash (s : state) : int :=
   add (PrimInt63.mul (ior (hside s.(sideA)) (shl (hside s.(sideB)) 28)) 1000003)
     (ior (hpend s.(pend)) (shl (hcombat s.(cmb)) 11)).
 
+(** ** Move hints for the memos
+
+    The protagonist's searches ([MemoB.check_mb], [MemoB.check_mw],
+    [MemoA.check_m]) try first the move a hint names ([MemoA.hfirst]),
+    found from the hash of the node. Any hint is sound: every move is
+    still tried, and the protagonist needs only one that works. The hints
+    are a hash table stored after the [n] entries of an array [A]: the [p]
+    slots from [n] on. A node's key [k] is its hash mixed with both
+    players' lives ([hint_key]: [shash] leaves them out), and the node
+    reads slot [n + k mod p]. A slot holds [tag * 64 + i], and names move
+    [i - 1] for the nodes whose key has [tag] above bit 40 (0 for none). A
+    node that finds another node's slot, or an empty one, gets no hint. *)
+
+Definition hint_key (s : state) (h : int) : int :=
+  add h (PrimInt63.mul (add (int_of_nat s.(sideA).(life)) (shl (int_of_nat s.(sideB).(life)) 7))
+           2177342782468422677).
+Definition hint_slot (n p k : int) : int := add n (PrimInt63.mod k p).
+Definition hint_dec (x k : int) : nat := if eqb (shr x 6) (shr k 40) then nat_of_int 6 x else O.
+Definition hint_of (A : array int) (n : int) (s : state) (h : int) : nat :=
+  let p := sub (PArray.length A) n in
+  if ltb 0 p then let k := hint_key s h in hint_dec A.[hint_slot n p k] k else O.
+
 (** ** Checking every index of a table *)
 
 Section Ranges.
@@ -326,7 +348,7 @@ Definition below (s : state) (r : nat) : option nat :=
 (** Record [j] checks, searched with [MemoB.check_mw] (which implies
     [WinCert.check_win] with every move of B's allowed). *)
 Definition record_ok (j : int) : bool :=
-  fst (MemoB.check_mw H ott tt shash lookup below (rank_of j) fuel true (entry (dec K1.[j] K2.[j]) (val_of j))
+  fst (MemoB.check_mw H ott tt shash (hint_of RV (PArray.length K1)) lookup below (rank_of j) fuel true (entry (dec K1.[j] K2.[j]) (val_of j))
          MemoA.MLeaf).
 
 Lemma lookup_spec : forall s r v, lookup s r = Some v ->
@@ -353,7 +375,7 @@ Proof.
   refine (certified_win_opening_sym H ott tt lookup below hint PB r v _ Hr Hv).
   intros s r' v' Hlk. destruct (lookup_spec s r' v' Hlk) as (j & d & Hj & E & -> & ->).
   destruct (sortA_sw s) as [sw Esw]. rewrite Esw in E.
-  destruct (MemoB.check_mw_true H ott tt shash lookup below _ _ _ (chain_all record_ok bs _ Hc H0 Hl j Hj))
+  destruct (MemoB.check_mw_true H ott tt shash (hint_of RV (PArray.length K1)) lookup below _ _ _ (chain_all record_ok bs _ Hc H0 Hl j Hj))
     as [f Hf].
   exists d, f, sw. rewrite <- E. exact Hf.
 Qed.
@@ -394,7 +416,7 @@ Definition slookup (s : state) : option nat :=
 (** Entry [j] checks, searched with [MemoB.check_mb] (which implies
     [Checker.check_node] with every move of B's allowed). *)
 Definition entry_ok (j : int) : bool :=
-  fst (MemoB.check_mb H ott tt shash slookup fuel true (entry (dec K1.[j] K2.[j]) (sval_of j)) MemoA.MLeaf).
+  fst (MemoB.check_mb H ott tt shash (hint_of V (PArray.length K1)) slookup fuel true (entry (dec K1.[j] K2.[j]) (sval_of j)) MemoA.MLeaf).
 
 Lemma slookup_spec : forall s v, slookup s = Some v ->
   exists j d, ltb j (PArray.length K1) = true /\ dec K1.[j] K2.[j] = bump PA d (sortA s) /\ v = sval_of j.
@@ -418,7 +440,7 @@ Proof.
   refine (certified_opening_sym H ott tt slookup hint p v _ Hr Hv).
   intros s v' Hlk. destruct (slookup_spec s v' Hlk) as (j & d & Hj & E & ->).
   destruct (sortA_sw s) as [sw Esw]. rewrite Esw in E.
-  destruct (MemoB.check_mb_true H ott tt shash slookup _ _ (chain_all entry_ok bs _ Hc H0 Hl j Hj)) as [f Hf].
+  destruct (MemoB.check_mb_true H ott tt shash (hint_of V (PArray.length K1)) slookup _ _ (chain_all entry_ok bs _ Hc H0 Hl j Hj)) as [f Hf].
   exists d, f, sw. rewrite <- E. exact Hf.
 Qed.
 

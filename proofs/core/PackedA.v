@@ -85,12 +85,16 @@ Definition alookup (s : state) : option (Z * Z) :=
     if state_eqb (bump PA (up_by s e) e) s then Some (line_of j) else None
   else None.
 
+(** The hints of A's moves ([Packed.hint_of]): the part of [CV] after the
+    entries' parts. *)
+Definition ahints : array int := CV.[shr (add N 1048575) 20].
+
 (** Entry [j] checks, searched with [MemoA.check_m] (which implies
-    [CheckerA.check_node] with every move allowed). *)
+    [CheckerA.check_node] with every move allowed, A's hinted move first). *)
 Definition aentry_ok (j : int) : bool :=
   let '(c, b) := line_of j in
-  fst (MemoA.check_m K Hb ott tt alookup shash fuel true (CheckerA.entry (life_of j) (dec (get C1 j) (get C2 j))) c b O
-         MemoA.MLeaf).
+  fst (MemoA.check_m K Hb ott tt alookup shash (hint_of ahints 0) fuel true
+         (CheckerA.entry (life_of j) (dec (get C1 j) (get C2 j))) c b O MemoA.MLeaf).
 
 Lemma alookup_spec : forall s l, alookup s = Some l ->
   exists j d, ltb j N = true /\ sortA s = bump PA d (dec (get C1 j) (get C2 j)) /\ l = line_of j.
@@ -118,7 +122,7 @@ Proof.
   destruct (sortA_sw s) as [sw Esw]. rewrite Esw in Es.
   pose proof (chain_all aentry_ok bs _ Hc H0 Hl j Hj) as Hok.
   unfold aentry_ok in Hok. rewrite <- E in Hok.
-  destruct (MemoA.check_m_true K Hb ott tt alookup shash _ _ _ _ _ Hok) as [f Hf].
+  destruct (MemoA.check_m_true K Hb ott tt alookup shash (hint_of ahints 0) _ _ _ _ _ Hok) as [f Hf].
   exists d, (dec (get C1 j) (get C2 j)), (life_of j), f, sw. auto.
 Qed.
 

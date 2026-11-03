@@ -6,7 +6,9 @@
     [StateEq.hint]), keeping the result of every node they have searched in
     [MemoA]'s memo. They are proved to imply the original checks
     ([check_mb_true], [check_mw_true]); nothing is assumed about [hash].
-    B tries its moves in the model's order. *)
+    B tries its moves in the model's order, after a hinted move
+    ([bhint], read by [Packed] from a hint table: [MemoA.hfirst]). Any
+    hint is sound. *)
 
 From Stdlib Require Import Bool List Arith ZArith Lia.
 From Stdlib Require PrimInt63.
@@ -26,6 +28,9 @@ Section MemoB.
 
 Variables H ott tt : nat.
 Variable hash : state -> PrimInt63.int.
+(** The move B tries first at a node with several moves, from the node's
+    hash ([MemoA.hfirst]): untrusted, any function is sound. *)
+Variable bhint : state -> PrimInt63.int -> nat.
 
 Notation CN := (check_node H ott tt).
 Notation CW := (WinCert.check_win H ott tt).
@@ -69,13 +74,14 @@ Fixpoint check_mb (fuel : nat) (root : bool) (s : state) (t : mtree) : bool * mt
           else
             let g m t := let s' := step s m in if too_many ott s' then (false, t) else check_mb f false s' t in
             let ms := moves s in
-            let search t := match to_move s with PB => any_m g ms t | PA => all_m g ms t end in
-            if forced ms then search t
+            if forced ms then match to_move s with PB => any_m g ms t | PA => all_m g ms t end
             else
               let h := hash s in
               match sfind s (tfind h t) with
               | Some r => (r, t)
-              | None => let (r, t) := search t in (r, tadd h (ME s 0%Z 0%Z 0 r) t)
+              | None =>
+                  let (r, t) := match to_move s with PB => any_m g (hfirst (bhint s h) ms) t | PA => all_m g ms t end in
+                  (r, tadd h (ME s 0%Z 0%Z 0 r) t)
               end
       end
   end.
@@ -154,10 +160,10 @@ Proof.
   { intros f' Hf. rewrite CNl_S, Ew.
     replace (negb root && is_turn_start s) with false by (destruct root; [reflexivity | exact (eq_sym Er)]).
     rewrite Eh. exact Hf. }
-  assert (Hsearch : forall t0 r1 t1, tree_okB CNl t0 ->
-    (match to_move s with PB => any_m g (moves s) t0 | PA => all_m g (moves s) t0 end) = (r1, t1) ->
+  assert (Hsearch : forall o t0 r1 t1, (forall m, In m o -> In m (moves s)) -> tree_okB CNl t0 ->
+    (match to_move s with PB => any_m g o t0 | PA => all_m g (moves s) t0 end) = (r1, t1) ->
     tree_okB CNl t1 /\ (r1 = true -> exists f', CNl f' root s = true)).
-  { intros t0 r1 t1 Ht0 E1. destruct (to_move s).
+  { intros o t0 r1 t1 Ho Ht0 E1. destruct (to_move s).
     - destruct (all_m_spec (tree_okB CNl) g Q _ t0 r1 t1 (fun x t0 r0 t0' _ => Hg x t0 r0 t0') Ht0 E1) as [Ht1 Hr].
       split; [exact Ht1 |]. intros E.
       destruct (uniform_fuel (fun f' m => (if too_many ott (step s m) then false else CNl f' false (step s m)) = true)
@@ -166,15 +172,16 @@ Proof.
       + exists (S f'). apply Hnode. rewrite all_moves_forallb. apply forallb_forall. exact Hf.
     - destruct (any_m_spec (tree_okB CNl) g Q _ t0 r1 t1 (fun x t0 r0 t0' _ => Hg x t0 r0 t0') Ht0 E1) as [Ht1 Hr].
       split; [exact Ht1 |]. intros E. destruct (Hr E) as (x & Hx & f' & Hf). exists (S f'). apply Hnode.
-      rewrite some_move_existsb. apply existsb_exists. exists x. split; [exact Hx | exact Hf]. }
+      rewrite some_move_existsb. apply existsb_exists. exists x. split; [exact (Ho x Hx) | exact Hf]. }
   destruct (forced (moves s)).
-  { exact (Hsearch t r t' Ht Hc). }
+  { exact (Hsearch (moves s) t r t' (fun m Hm => Hm) Ht Hc). }
   destruct (sfind s (tfind (hash s) t)) as [r0 |] eqn:Ef.
   { injection Hc as <- <-. split; [exact Ht |]. intros E.
     destruct (sfind_ok _ _ _ _ Ht Ef E) as [f' Hf]. exists f'. apply Hroot. exact Hf. }
-  destruct (match to_move s with PB => any_m g (moves s) t | PA => all_m g (moves s) t end) as [r1 t1] eqn:E1.
+  destruct (match to_move s with PB => any_m g (hfirst (bhint s (hash s)) (moves s)) t | PA => all_m g (moves s) t end)
+    as [r1 t1] eqn:E1.
   injection Hc as <- <-.
-  destruct (Hsearch t r1 t1 Ht E1) as [Ht1 Hres]. split; [| exact Hres].
+  destruct (Hsearch _ t r1 t1 (hfirst_in _ _) Ht E1) as [Ht1 Hres]. split; [| exact Hres].
   apply tadd_okB; [exact Ht1 |]. intros E. destruct (Hres E) as [f' Hf]. exists f'. apply Hroot'. exact Hf.
 Qed.
 
@@ -214,17 +221,22 @@ Fixpoint check_mw (fuel : nat) (root : bool) (s : state) (t : mtree) : bool * mt
           else
             let g m t := let s' := step s m in if too_many ott s' then (false, t) else check_mw f false s' t in
             let ms := moves s in
-            let search t :=
+            if forced ms then
               match to_move s with
               | PB => any_m g ms t
               | PA => match ms with [] => (false, t) | ms => all_m g ms t end
-              end in
-            if forced ms then search t
+              end
             else
               let h := hash s in
               match sfind s (tfind h t) with
               | Some x => (x, t)
-              | None => let (x, t) := search t in (x, tadd h (ME s 0%Z 0%Z 0 x) t)
+              | None =>
+                  let (x, t) :=
+                    match to_move s with
+                    | PB => any_m g (hfirst (bhint s h) ms) t
+                    | PA => match ms with [] => (false, t) | ms => all_m g ms t end
+                    end in
+                  (x, tadd h (ME s 0%Z 0%Z 0 x) t)
               end
       end
   end.
@@ -312,13 +324,13 @@ Proof.
   { intros f' Hf. rewrite CWl_S, Ew.
     replace (negb root && is_turn_start s) with false by (destruct root; [reflexivity | exact (eq_sym Er)]).
     rewrite Eh. exact Hf. }
-  assert (Hsearch : forall t0 x1 t1, tree_okB CWl t0 ->
+  assert (Hsearch : forall o t0 x1 t1, (forall m, In m o -> In m (moves s)) -> tree_okB CWl t0 ->
     (match to_move s with
-     | PB => any_m g (moves s) t0
+     | PB => any_m g o t0
      | PA => match moves s with [] => (false, t0) | _ :: _ => all_m g (moves s) t0 end
      end) = (x1, t1) ->
     tree_okB CWl t1 /\ (x1 = true -> exists f', CWl f' root s = true)).
-  { intros t0 x1 t1 Ht0 E1. destruct (to_move s).
+  { intros o t0 x1 t1 Ho Ht0 E1. destruct (to_move s).
     - destruct (moves s) as [| m0 ms] eqn:Ems.
       { injection E1 as <- <-. split; [exact Ht0 | discriminate]. }
       destruct (all_m_spec (tree_okB CWl) g Q (m0 :: ms) t0 x1 t1 (fun y t0 r0 t0' _ => Hg y t0 r0 t0') Ht0 E1)
@@ -330,18 +342,18 @@ Proof.
       + exists (S f'). apply Hnode. cbv iota. rewrite all_moves_forallb. apply forallb_forall. exact Hf.
     - destruct (any_m_spec (tree_okB CWl) g Q _ t0 x1 t1 (fun y t0 r0 t0' _ => Hg y t0 r0 t0') Ht0 E1) as [Ht1 Hr].
       split; [exact Ht1 |]. intros E. destruct (Hr E) as (y & Hy & f' & Hf). exists (S f'). apply Hnode.
-      rewrite some_move_existsb. apply existsb_exists. exists y. split; [exact Hy | exact Hf]. }
+      rewrite some_move_existsb. apply existsb_exists. exists y. split; [exact (Ho y Hy) | exact Hf]. }
   destruct (forced (moves s)).
-  { exact (Hsearch t x t' Ht Hc). }
+  { exact (Hsearch (moves s) t x t' (fun m Hm => Hm) Ht Hc). }
   destruct (sfind s (tfind (hash s) t)) as [r0 |] eqn:Ef.
   { injection Hc as <- <-. split; [exact Ht |]. intros E.
     destruct (sfind_ok _ _ _ _ Ht Ef E) as [f' Hf]. exists f'. apply Hroot. exact Hf. }
   destruct (match to_move s with
-            | PB => any_m g (moves s) t
+            | PB => any_m g (hfirst (bhint s (hash s)) (moves s)) t
             | PA => match moves s with [] => (false, t) | _ :: _ => all_m g (moves s) t end
             end) as [x1 t1] eqn:E1.
   injection Hc as <- <-.
-  destruct (Hsearch t x1 t1 Ht E1) as [Ht1 Hres]. split; [| exact Hres].
+  destruct (Hsearch _ t x1 t1 (hfirst_in _ _) Ht E1) as [Ht1 Hres]. split; [| exact Hres].
   apply tadd_okB; [exact Ht1 |]. intros E. destruct (Hres E) as [f' Hf]. exists f'. apply Hroot'. exact Hf.
 Qed.
 

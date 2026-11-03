@@ -287,3 +287,77 @@ let profile_order dir =
   let l = Hashtbl.fold (fun k (c, x) acc -> (x, c, k) :: acc) stats [] |> List.sort compare |> List.rev in
   Printf.printf "profile-order %s: B nodes with several moves, every 10th entry; wasted nodes, count, kind/index\n" dir;
   List.iteri (fun i (x, c, k) -> if i < 40 then Printf.printf "  %9d %8d  %s\n" x c k) l
+
+(* [profile-opt DIR] (experiment): what B's choice of move at its nodes
+   could save, beyond trying a working move first. For every 10th entry,
+   the estimated cost (Certify.b_weight) of the search as Rocq runs it
+   with no hints, with B trying first its first working move in the
+   model's order, and with B trying first the working move whose subtree
+   is cheapest (a memoised search of every move, costs summed over A's
+   moves without the memo's sharing). *)
+let profile_opt dir =
+  let num, arr, has = Certify.read_data dir in
+  let h = num "H" and ott = num "ott" and tt = num "tt" in
+  let k1s = arr "K1" and k2s = arr "K2" in
+  let n = Array.length k1s in
+  let win = has "Definition RV " in
+  let vs = if win then arr "RV" else arr "V" in
+  let tot = Array.make 3 0. in
+  let weight f =
+    let cnt = zero () in
+    Certify.c_lk := 0; Certify.c_scan := 0; ignore (f cnt);
+    (9.34e-6 *. float cnt.moves) +. (1.69e-5 *. float !Certify.c_lk) +. (2.79e-6 *. float !Certify.c_scan) in
+  let j = ref 0 in
+  while !j < n do
+    let jj = !j in
+    let leaf =
+      if win then Certify.win_leaf ~h ~tt k1s k2s vs (Certify.rank_of vs jj)
+      else Certify.safe_leaf ~h ~tt k1s k2s vs
+    in
+    let e = entry (Certify.dec (k1s.(jj), k2s.(jj))) (vs.(jj) land 63) in
+
+    let w0 = weight (fun cnt -> search ~h ~ott ~win cnt leaf (fun _ ms -> ms) e) in
+    let order1, _ = first_working ~h ~ott ~win leaf e in
+    let w1 = weight (fun cnt -> search ~h ~ott ~win cnt leaf order1 e) in
+    (* the cheapest working move at each B node *)
+    let memo = H.create 1024 and pick = H.create 256 in
+    let rec cost root s =
+      match winner s with
+      | Some PB -> 0.
+      | Some PA -> infinity
+      | None ->
+        if (not root) && is_turn_start s then begin
+          let l0 = !Certify.c_lk and s0 = !Certify.c_scan in
+          let ok = leaf s in
+          if ok then (1.69e-5 *. float (!Certify.c_lk - l0)) +. (2.79e-6 *. float (!Certify.c_scan - s0)) else infinity
+        end
+        else if huge_event h s then infinity
+        else
+          match H.find_opt memo s with
+          | Some c -> c
+          | None ->
+            let ms = moves s in
+            let base = 9.34e-6 *. float (List.length ms) in
+            let child m = let s' = step s m in if too_many ott s' then infinity else cost false s' in
+            let c =
+              match to_move s with
+              | PA ->
+                if win && ms = [] then infinity
+                else List.fold_left (fun acc m -> if acc = infinity then infinity else acc +. child m) base ms
+              | PB ->
+                let best = ref infinity and bm = ref None in
+                List.iter (fun m -> let c = child m in if c < !best then (best := c; bm := Some m)) ms;
+                (match !bm with Some m -> H.replace pick s m | None -> ());
+                base +. !best
+            in
+            H.replace memo s c;
+            c
+    in
+    ignore (cost true e);
+    let order2 s ms = match H.find_opt pick s with Some m -> m :: List.filter (fun m' -> m' <> m) ms | None -> ms in
+    let w2 = weight (fun cnt -> search ~h ~ott ~win cnt leaf order2 e) in
+    tot.(0) <- tot.(0) +. w0; tot.(1) <- tot.(1) +. w1; tot.(2) <- tot.(2) +. w2;
+    j := !j + 10
+  done;
+  Printf.printf "profile-opt %s: every 10th of %d entries, est. Rocq seconds (x10): no hints %.0f, first working %.0f, cheapest working %.0f\n"
+    dir n (10. *. tot.(0)) (10. *. tot.(1)) (10. *. tot.(2))

@@ -456,6 +456,7 @@ let () =
   | [| _; "amono"; dir |] -> Shrink.amono dir
   | [| _; "profile-b"; dir |] -> Prof.profile_b dir
   | [| _; "profile-order"; dir |] -> Prof.profile_order dir
+  | [| _; "profile-opt"; dir |] -> Prof.profile_opt dir
   | [| _; "profile-a"; entries |] -> Profa.profile_a entries (a_params ())
   | [| _; "certify-a-debug"; dir; hex; c; b |] ->
     Certifya.debug dir hex (int_of_string c) (int_of_string b) (a_params ())
