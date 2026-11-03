@@ -462,6 +462,9 @@ let () =
   | [| _; "certify-a-levels"; dir; k1; k2 |] -> Certifya.levels dir (int_of_string k1) (int_of_string k2)
   | [| _; "certify-a-explain"; dir; k1; k2; c; b |] ->
     Certifya.debug_packed dir (int_of_string k1) (int_of_string k2) (int_of_string c) (int_of_string b) (a_params ())
+  | [| _; "strat-closure"; mode; rule; out |] -> Stratcheck.closure mode rule out
+  | [| _; "strat-fix"; mode; rule; dir |] -> Stratcheck.fix mode rule dir
+  | [| _; "strat-pv"; "asafe"; rule; life; n |] -> Stratcheck.pv_asafe rule (int_of_string life) (int_of_string n)
   | [| _; "walk"; seed; steps |] -> Walk.run (int_of_string seed) (int_of_string steps)
   | [| _; "walk"; seed; steps; "bias" |] -> Walk.run ~bias:true (int_of_string seed) (int_of_string steps)
   | [| _; "fix"; mode; who; t; tt; lmax; starter |] -> run mode who t tt lmax (init (pl starter))
