@@ -62,7 +62,8 @@ c + b n, the most life B can have there with A still safe.
 `proofs/core/CheckerA.v` checks line-valued tables, and
 `proofs/core/SaturationA.v` proves the checker sound, both for A's unbounded
 Walker and for B's Walker saturated at a fixed size. `proofs/adraw` holds
-the solver's table (the 5.9M positions the check of the opening reaches),
+1.1M positions of the solver's table, enough for the check of the
+opening (a position can be answered by the same position with less A life),
 and Rocq checks every entry of it, so `safe PA (init PA)` (`a_first_a_safe`)
 is a theorem, and with `a_first_b_safe` the A-first game is a draw
 (`a_first_draw`). `REDUCTION.md` (R7 and the end) has the details.
@@ -108,14 +109,13 @@ Build everything with:
 nix-shell --run 'dune build -j 4'
 ```
 
-This takes about 5.5 CPU-hours: Rocq runs the checker on 1.5M positions for
-the B-first claim (`proofs/bfirst`, 1 CPU-hour: 48 chunks of 0.8–1.8
-minutes), 1.6M for A-first B-safe (`proofs/afirst`, 0.75 CPU-hours: 48
-chunks of 0.6–1.3 minutes) and 5.9M for A-first A-safe (`proofs/adraw`,
-3.7 CPU-hours: 128 chunks of 1.2–2.7 minutes). Each job needs about 1 GB
-of memory or less, except the two `Data.v` files of `proofs/afirst` and
-`proofs/bfirst`, which need about 3 GB each while they compile, so choose
-`-j` to fit your machine.
+This takes about 1.3 CPU-hours (28 minutes with `-j 3`): Rocq runs the
+checker on 0.94M positions for the B-first claim (`proofs/bfirst`, 0.44
+CPU-hours: 16 chunks of 1.1–2.8 minutes), 0.27M for A-first B-safe
+(`proofs/afirst`, 0.14 CPU-hours: 4 chunks of 1.7–2.5 minutes) and 1.1M
+for A-first A-safe (`proofs/adraw`, 0.73 CPU-hours: 24 chunks of 1.3–2.3
+minutes). Each job needs about 1 GB of memory or less, except
+`proofs/bfirst/Data.v`, which needs about 2 GB while it compiles.
 
 For each theorem in `proofs/results/Results.v`, the build prints the
 assumptions it rests on. The only ones are Rocq's primitive 63-bit integers
@@ -157,30 +157,36 @@ COMMON='TCB_MACRO=1 TCB_FULLOPP=1 TCB_BMACRO=blk,atk2,dmg'
 
 # A plays first: B is safe, so A can't force a win
 env $COMMON TCB_OT=10 TCB_OTT=20 TCB_SAVE=tables/bsafe-afirst-10-full $R fix safe B 10 10 100 A
-$C certify-safe-export tables/bsafe-afirst-10-full A proofs/afirst 48 200
+TCB_ROUNDS=2 $C certify-safe-export tables/bsafe-afirst-10-full A proofs/afirst 4 200
 
 # B plays first: B wins
 env $COMMON TCB_RANKS=1 TCB_OT=14 TCB_OTT=14 TCB_SAVE=tables/bwin-bfirst-14-full $R fix win B 4 14 100 B
-$C certify-win-export tables/bwin-bfirst-14-full B proofs/bfirst 48 200
+TCB_ROUNDS=1 $C certify-win-export tables/bwin-bfirst-14-full B proofs/bfirst 16 200
 
 # A plays first: A is safe (one unbounded A Walker, lines c + b n)
 env TCB_BIG=1 TCB_BIGCHECK=1 TCB_MACRO=1 TCB_FULLOPP=1 TCB_NOBOUND=1 TCB_OT=6 TCB_OTT=6 \
   TCB_AMACRO=atk2,pump,order,dmg TCB_SAVE=tables/asafe-afirst-big $R fix safe A 20 8 100 A
 $C certify-a tables/asafe-afirst-big A tables/asafe-afirst-big.entries
-TCB_M=64 TCB_FUEL=200 $C certify-a-export tables/asafe-afirst-big.entries A proofs/adraw 128
+TCB_M=64 TCB_FUEL=200 $C certify-a-export tables/asafe-afirst-big.entries A proofs/adraw 24
 ```
 
-`main.exe rechunk proofs/afirst 48` (or `proofs/bfirst`) checks an exported
+`main.exe rechunk proofs/afirst 4` (or `proofs/bfirst 16`) checks an exported
 table again as Rocq will and cuts it into chunks of near-equal work,
 leaving `Data.v.xz` as it is.
 
-The export keeps only the positions the check of the opening reaches, runs
+The export keeps only the positions the check of the opening needs, runs
 the same check as Rocq (the checkers extracted to OCaml) and writes the
 Rocq files, with the chunks cut by the work the check does on each entry.
-For the A-safe table these are two steps: `certify-a` collects the reached
-positions (with an untrusted oracle choosing A's moves) and
-`certify-a-export` checks them again exactly as Rocq will, with A trying
-every move (its attacks in reverse order).
+It follows the check from the opening, choosing the protagonist's moves so
+that their turn starts need as few new entries as possible, and a lookup
+may answer with the same position at another A life (more A life for B's
+tables, less for A's), so one entry serves several. `TCB_ROUNDS=N` runs
+this N more times, preferring the entries the previous run used. None of
+these choices is trusted: Rocq tries every move and checks every entry.
+For the A-safe table these are two steps: `certify-a` collects the
+entries (choosing A's moves) and `certify-a-export` checks them again
+exactly as Rocq will, with A trying every move (its attacks in reverse
+order).
 
 `REDUCTION.md` explains how the search space was reduced to make these
 tables small enough to compute.

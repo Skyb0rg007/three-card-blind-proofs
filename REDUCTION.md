@@ -1244,3 +1244,11 @@ Done: `a_first_a_safe` and `a_first_draw` are proved in `Results.v`.
   turn start that isn't covered adds its representative, the same
   position at the most dominant A life with a value at least as good.
   Rocq still tries every move, so the choice needs no trust either.
+  The B-side exports can repeat the closure (`TCB_ROUNDS`), weighing each
+  representative by how much the previous round used it; `certify-a`
+  sends the entries its final check fails back to the closure (none
+  needed it). The tables shrink to 270,340 entries for afirst (from
+  1,626,854), 936,099 records for bfirst (from 1,512,056) and 1,077,719
+  entries for adraw (from 5,879,511), and the whole build to about 1.3
+  CPU-hours (from 5.5): adraw 0.73 (was 3.7), bfirst 0.44 (was 1.0),
+  afirst 0.14 (was 0.75).
