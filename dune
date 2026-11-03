@@ -1,0 +1,2 @@
+; Solver tables and scratch certificates are data, never part of the build.
+(data_only_dirs tables cert)
