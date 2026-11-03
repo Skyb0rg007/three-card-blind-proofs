@@ -9,7 +9,8 @@ Definition fuel := 200.
 Require Import DataC1_0.
 Require Import DataC2_0.
 Require Import DataCV_0.
+Require Import DataCV_1.
 Definition C1 : array (array int) := [| C1_0 | C1_0 |].
 Definition C2 : array (array int) := [| C2_0 | C2_0 |].
-Definition CV : array (array int) := [| CV_0 | CV_0 |].
+Definition CV : array (array int) := [| CV_0; CV_1 | CV_0 |].
 Definition N : int := 581561%uint63.

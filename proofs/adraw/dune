@@ -15,6 +15,11 @@
  (deps DataCV_0.v.xz)
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
 
+(rule
+ (target DataCV_1.v)
+ (deps DataCV_1.v.xz)
+ (action (with-stdout-to %{target} (run xz -dc %{deps}))))
+
 (rocq.theory
  (name TCB.ADraw)
  (theories Stdlib TCB.Spec TCB.Proofs))
