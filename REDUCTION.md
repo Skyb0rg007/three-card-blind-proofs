@@ -1325,3 +1325,112 @@ The machine was slower than when the old build cost (1.33 CPU-hours) was
 measured; the same-session ratio is 0.43 for CPU and 0.44 for wall time.
 The largest job is now `core/Mono.v` or `bfirst/Data.v`, at 1.3 GB (was
 2.0 GB for `bfirst/Data.v`).
+
+## Move hints: the protagonist's first move
+
+The protagonist needs one move that works at each of its nodes, and the
+checks try its moves in a fixed order. When the first move fails, its
+whole subtree was searched for nothing. A profile of the shipped tables
+(`profile-opt`, every 10th entry) put a number on it: with an oracle
+that tries a working move first, the A-first B-safe check searches 89.5
+nodes per entry instead of 184.5 and lists 137 moves instead of 259; the
+B-first check 79 nodes instead of 174. The estimated Rocq time of
+`proofs/afirst` falls from 364 s to 189 s. Trying the *cheapest* working
+move first instead of any working move gives nothing more (190 s), so
+the first working move is the target.
+
+**Options measured** (OCaml mirrors of the checks, estimated Rocq time
+of `proofs/afirst` from the fitted cost model, data included):
+
+- **Static, state-only rules.** Reversing one family of B's moves in
+  `moves`' order: upkeep choices first saves 2.8% of the moves listed;
+  blocks, attacks and the end-of-turn window reversed cost 10%, 30% and
+  56% more; the others change nothing, and combinations are worse.
+  Rejected: no single order fits the positions.
+- **A hint table read by hash, used by reordering** (shipped). The
+  exporter runs the check and records, at each protagonist node with
+  several moves where the first move fails, which move works. The table
+  maps a key of the node to 1 + that move's index. In Rocq the move is
+  tried first (`MemoA.hfirst i ms = nth (i-1) ms :: ms`), and then the
+  whole list as before. Soundness is a one-line lemma (`hfirst_in`:
+  every move of the new list is in the old one); the memo proofs were
+  generalized over the order list, and nothing is assumed about the
+  hints, so a wrong hint costs time only. The key is the node's memo
+  hash (`Packed.shash`, already computed for the memo) mixed with both
+  players' life (`Packed.hint_key`; `shash` leaves the lives out). Keys tried on `afirst`: memo hash only 228 s,
+  hash + both lives 209 s, the full packed state 209 s, hash + lives +
+  hands 210 s. The table is open addressing with one slot per key and
+  no probing (`slot = n + key mod p`, `p` the table size); a slot holds
+  the key's high bits and the index, and a lookup that finds another
+  key's bits gets no hint. Two candidate slots per key gave nothing
+  more, and the table size barely matters: 1.0, 2.0, 3.0 and 5.0 slots per hinted key give 213, 208, 208
+  and 214 s (Data.v costs about 19 µs per integer in Rocq).
+- **A cheaper move order with no table** (option (c) alone): any fixed
+  reordering is sound with the same lemma, and the static rules above
+  are such reorderings; the best saved under 3%.
+
+**How the table is filled.** A hint changes the search below it (other
+nodes are reached, others are answered by the memo), so the exporter
+builds the table in passes (`Certify.hint_passes`). Each pass runs the
+hinted mirror of Rocq's check over every entry and records demands: a
+node whose first move failed asks for the working move, with the cost of
+the subtree it wasted; a node whose hint failed counts against it.
+Demands under a move that itself failed are dropped (that subtree goes
+away once the move above is hinted). The scores are summed per key,
+keys are placed best score first, and a key whose score doesn't pay for
+its slot's Data cost is left out. The pass with the lowest estimate
+(table included) is kept; three passes by default, stopping early when
+a pass gains less than 0.5%. The final check is the exact mirror of
+Rocq's, hints and all, and the chunks are cut with it.
+
+Where the hints are looked up: B's tables at B's non-forced nodes that
+miss the memo (forced nodes have one move), the A table at A's nodes
+that miss the memo. The hint costs `hint_key` + one array read, about
+3 µs in Rocq's VM (measured), against about 9 µs per move listed. The B tables
+keep the hints after the `n` records in `V` / `RV` (the table theorems
+read only the first `n`, so `table_safe` and `table_wins` keep their
+statements); the A table keeps them in an extra part of `CV`
+(`PackedA.ahints`), past the parts the entries use.
+
+| Table | hint slots | est. before | est. after |
+|---|---|---|---|
+| `proofs/bfirst` | 1,173,049 | 1731 s | 1025 s |
+| `proofs/afirst` | 268,617 | 363 s | 209 s |
+| `proofs/adraw` | 379,281 | 1951 s | 1652 s |
+
+The A table gains less: A's attacks are already tried in reverse
+(`MemoA.a_order`), which took the most common failing first move away.
+
+**Measured in Rocq.** Chunks of the old and new tables compiled in pairs
+(the old and the new table's chunks side by side, four `rocq compile`s
+at a time, so both see the same machine; CPU time):
+
+| Table | chunks before | after | ratio | `Data` before | after |
+|---|---|---|---|---|---|
+| `proofs/bfirst` | 1016 s | 607 s | 0.60 | 33 s, 1.30 GB | 56 s, 1.99 GB |
+| `proofs/afirst` | 177 s | 120 s | 0.68 | 8 s, 0.61 GB | 13 s, 0.78 GB |
+| `proofs/adraw` | 1317 s | 1147 s | 0.87 | 3 × 11 s, 0.70 GB | + 8 s, 0.63 GB |
+
+The ratios are close to the estimates (0.58, 0.56 and 0.84, data
+left out). Six of the new `adraw` chunks with an empty hint table, paired with
+the same chunks with the table, took 272 s against 206 s, so the A
+hints pay for their lookups too.
+
+Two clean `-j 3` builds one after the other (Rocq CPU time from dune's
+trace; the machine was shared: the new build's `adraw` chunks ran 11%
+slower than in the paired run and the old build's 7% faster, so the whole-build
+ratio understates the gain):
+
+| | before | after |
+|---|---|---|
+| `proofs/bfirst` | 1240 s | 781 s |
+| `proofs/afirst` | 277 s | 172 s |
+| `proofs/adraw` | 1259 s | 1319 s |
+| whole build | 2883 s (0.80 h), 1001 s wall | 2379 s (0.66 h), 832 s wall |
+| largest job | 1.30 GB (`core/Mono.v`, `bfirst/Data.v`) | 1.99 GB (`bfirst/Data.v`) |
+
+The price is memory and data: `bfirst/Data.v` holds 1.17M more
+integers and now needs 2.0 GB (the build's three jobs peaked at 2.9 GB
+together, 2.5 GB before). `TCB_HINT_LOAD` and the score threshold trade
+slots for time; the default keeps a slot only where its data costs less
+than the time it saves.

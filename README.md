@@ -103,7 +103,8 @@ The repository is split so that you only have to read one directory.
     that if every entry passes the checker, the claim holds. `core/PackedA.v`
     does the same for line-valued tables. The entries are checked with
     `core/MemoB.v` and `core/MemoA.v`: the same searches with a memo of
-    the positions already searched, proved to imply the checkers above.
+    the positions already searched, and the protagonist trying a hinted
+    move first, proved to imply the checkers above.
   - `bfirst/`, `afirst/` and `adraw/` hold the three tables (`Data*.v.xz`,
     computed by the solver). Each `Chunk*.v` runs the checker on a slice of
     the table with `vm_compute`.
@@ -114,12 +115,13 @@ Build everything with:
 nix-shell --run 'dune build -j 4'
 ```
 
-This takes about 0.8 CPU-hours (16 minutes with `-j 3`): Rocq runs the
-checker on 0.57M positions for the B-first claim (`proofs/bfirst`, 0.31
-CPU-hours: 16 chunks of 0.9–1.5 minutes), 0.13M for A-first B-safe
-(`proofs/afirst`, 0.05 CPU-hours: 4 chunks of 0.7–0.8 minutes) and 0.58M
-for A-first A-safe (`proofs/adraw`, 0.38 CPU-hours: 24 chunks of 0.7–1.2
-minutes). Each job needs about 1.3 GB of memory or less.
+This takes about 0.66 CPU-hours (14 minutes with `-j 3`): Rocq runs the
+checker on 0.57M positions for the B-first claim (`proofs/bfirst`, 0.22
+CPU-hours: 16 chunks of 0.7–0.8 minutes), 0.13M for A-first B-safe
+(`proofs/afirst`, 0.05 CPU-hours: 4 chunks of about 0.65 minutes) and 0.58M
+for A-first A-safe (`proofs/adraw`, 0.37 CPU-hours: 24 chunks of 0.5–1.1
+minutes). Each job needs about 1.3 GB of memory or less, except
+`bfirst/Data.v` (2.0 GB).
 
 For each theorem in `proofs/results/Results.v`, the build prints the
 assumptions it rests on. The only ones are Rocq's primitive 63-bit integers
@@ -183,7 +185,8 @@ TCB_M=64 TCB_FUEL=200 $C certify-a-export tables/adraw-6.entries A proofs/adraw 
 
 `main.exe rechunk proofs/afirst 4` (or `proofs/bfirst 16`) checks an exported
 table again as Rocq will and cuts it into chunks of near-equal work,
-leaving `Data.v.xz` as it is.
+leaving `Data.v.xz` as it is (`TCB_HINTS=1` finds its hint table again
+and rewrites `Data.v.xz`).
 
 The export keeps only the positions the check of the opening needs, runs
 the same check as Rocq (the checkers extracted to OCaml) and writes the
@@ -199,8 +202,13 @@ tables, less for A's), so one entry serves several. `TCB_ROUNDS=N` runs
 this N more times, preferring the entries the previous run used
 (`TCB_PREV=ENTRIES` does the same for `certify-a`, from a previous run's
 entries). The B-first records get the smallest ranks their checks allow
-(`TCB_RERANK=0` keeps the solver's order). None of these choices is
-trusted: Rocq tries every move and checks every entry.
+(`TCB_RERANK=0` keeps the solver's order). Each export also writes a
+table of move hints: for the positions searched during the check where
+the protagonist's first move fails, the move to try first, indexed by a
+hash of the position (`TCB_HINTS=0` leaves it out; `TCB_HINT_PASSES`,
+3 by default, and `TCB_HINT_LOAD`, 1.25 slots per hinted position, tune
+it). None of these choices is trusted: Rocq tries every move and checks
+every entry.
 For the A-safe table these are two steps: `certify-a` collects the
 entries (choosing A's moves) and `certify-a-export` checks them again
 exactly as Rocq will, with A trying every move (its attacks in reverse
