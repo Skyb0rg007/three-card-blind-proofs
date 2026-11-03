@@ -425,6 +425,9 @@ module Tbl = struct
     end
     else false
 
+  (* A new value for an entry already there. *)
+  let set t e v = let i = slot t e in if t.a.{i} <> 0 then t.v.{i} <- v
+
   (* Slots [lo, hi) that hold entries. *)
   let iter_range t lo hi f = for i = lo to hi - 1 do if t.a.{i} <> 0 then f (t.a.{i} - 1, t.b.{i}) t.v.{i} done
 
@@ -465,22 +468,21 @@ let write_file path s =
   Sys.rename (path ^ ".tmp") path
 
 (* PackedA.alookup over the entries [find] gives (packed key -> line):
-   among the entries of [q]'s position at A's life up to [q]'s, the first,
-   by A's life, with the greatest line (c, b) in lexicographic order; it
-   answers if that entry is [q] with A's life lowered. Lines almost always
-   grow with A's life ([Shrink.amono]), so this is almost always the line
-   above all the others. *)
+   among the entries of [q]'s position at A's life up to [q]'s, the one at
+   the highest A life; it answers if that entry is [q] with A's life
+   lowered. Also returns that A life (0 if none): a new entry is the one
+   the lookup takes if it is above it. Lines almost always grow with A's
+   life ([Shrink.amono]), so this is almost always the highest line. *)
 let packed_choice find q =
   let best = ref None in
   for l = 1 to q.sideA.life do
     let e = enc { q with sideA = { q.sideA with life = l } } in
-    match find e with
-    | Some ln -> (match !best with Some (_, _, b) when compare b ln >= 0 -> () | _ -> best := Some (l, e, ln))
-    | None -> ()
+    match find e with Some ln -> best := Some (l, e, ln) | None -> ()
   done;
   match !best with
-  | Some (l, e, ln) when dec e = { q with sideA = { q.sideA with life = l } } -> Some ln
-  | _ -> None
+  | Some (l, e, ln) when dec e = { q with sideA = { q.sideA with life = l } } -> (Some ln, l)
+  | Some (l, _, _) -> (None, l)
+  | None -> (None, 0)
 
 (* [certify-a]. Progress is kept in OUT.state*: the entry table, and a line
    saying how far the passes got, so TCB_RESUME=1 continues a stopped run.
@@ -543,9 +545,9 @@ let run dir starter outfile p =
   let fails = ref fails in
   (* pass 1, a layer at a time: the workers check a slice of the layer each
      and write the entries their checks consult that aren't known yet *)
-  if phase = "pass1" then begin
+  let pass1 first =
     let failf = open_out_gen [ Open_append; Open_creat ] 0o644 (outfile ^ ".fail") in
-    let shown = ref 0 and layer = ref (done_ + 1) and continue = ref true in
+    let shown = ref 0 and layer = ref first and continue = ref true in
     while !continue do
       let l = !layer in
       let fr = ref [] in
@@ -576,7 +578,8 @@ let run dir starter outfile p =
               for j = a to b - 1 do
                 let s = dec fr.(j) and c, b = vline (Option.get (Tbl.find used fr.(j))) in
                 (* per entry: each key's representative and its line, and the
-                   line the entries known so far give it *)
+                   line the entries known so far give it (with the greatest
+                   line among them) *)
                 let reps = S.create 64 and known = S.create 64 in
                 let rep_of q = match S.find_opt reps q with
                   | Some x -> x
@@ -584,11 +587,33 @@ let run dir starter outfile p =
                 let known_of q = match S.find_opt known q with
                   | Some x -> x
                   | None -> let x = packed_choice find q in S.replace known q x; x in
+                (* the entry to collect for a turn start [s'] of key [q] whose
+                   line falls short: its representative, or failing that the
+                   lowest A life whose table line is enough, if the lookup
+                   would then take it (above the entry it takes now); at
+                   worst [q] itself *)
+                let cand s' q c' b' lo' =
+                  let _, at = known_of q in
+                  let fits r ln = r.sideA.life > at && meets p s' c' b' lo' ln in
+                  match rep_of q with
+                  | r, Some ln when fits r ln -> Some (r, ln)
+                  | _ ->
+                    let res = ref None in
+                    (try
+                       for l = at + 1 to q.sideA.life do
+                         let r = { q with sideA = { q.sideA with life = l } } in
+                         match lk r with
+                         | Some ln when fits r ln && dec (enc r) = r -> res := Some (r, ln); raise Exit
+                         | _ -> ()
+                       done
+                     with Exit -> ());
+                    !res
+                in
                 let leaf s' c' b' lo' =
                   let q = a_key p.hb p.tt s' in
                   match known_of q with
-                  | Some ln when meets p s' c' b' lo' ln -> 0.
-                  | _ -> (match rep_of q with _, Some ln when meets p s' c' b' lo' ln -> 1. | _ -> infinity)
+                  | Some ln, _ when meets p s' c' b' lo' ln -> 0.
+                  | _ -> if cand s' q c' b' lo' <> None then 1. else infinity
                 in
                 let e = a_entry p.m s in
                 let r, pick = if choose then achoose p leaf e c b else (0., H.create 1) in
@@ -600,11 +625,11 @@ let run dir starter outfile p =
                   awalk p pick (fun s' c' b' lo' ->
                       let q = a_key p.hb p.tt s' in
                       match known_of q with
-                      | Some ln when meets p s' c' b' lo' ln -> ()
+                      | Some ln, _ when meets p s' c' b' lo' ln -> ()
                       | _ ->
-                        match rep_of q with
-                        | r, Some ln when meets p s' c' b' lo' ln -> add r ln; S.reset known
-                        | _ -> Printf.fprintf oc "! %d %d: a turn start not covered\n" (fst fr.(j)) (snd fr.(j)))
+                        match cand s' q c' b' lo' with
+                        | Some (r, ln) -> add r ln; S.reset known
+                        | None -> Printf.fprintf oc "! %d %d: a turn start not covered\n" (fst fr.(j)) (snd fr.(j)))
                     e c b
               done;
               close_out oc;
@@ -630,40 +655,67 @@ let run dir starter outfile p =
       end
     done;
     close_out failf;
-    write_file st (Printf.sprintf "pass2 0 %d\n" !fails)
-  end;
-  let n = used.Tbl.n in
-  Printf.printf "pass 1: %d entries collected, %d failed so far (%.1fs)\n%!" n !fails (Unix.gettimeofday () -. t0);
+    write_file st (Printf.sprintf "pass2 0 %d\n" !fails);
+    !layer
+  in
   (* pass 2: lookup restricted to the closure, as Rocq will; A's moves from
      the oracle, or every move with TCB_HINT=all (as Rocq's hint), in
-     slices of the table *)
-  let restricted s = packed_choice (fun e -> Option.map vline (Tbl.find used e)) s in
-  let all = Sys.getenv_opt "TCB_HINT" = Some "all" in
-  let slices = 32 in
-  let bad2 = ref 0 in
-  for sl = (if phase = "pass2" then done_ else 0) to slices - 1 do
-    let lo, hi = Par.chunk cap slices sl in
-    let w = Par.workers n 2000 in
-    let bad =
-      Par.map ~dir:wdir w (fun k ->
-          let a, b = Par.chunk (hi - lo) w k in
-          let ok2, hint2, reset2 = oracle p restricted in
-          let bad = ref 0 in
-          Tbl.iter_range used (lo + a) (lo + b) (fun e v ->
-              let s = dec e and c, b = vline v in
-              let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b 0); hint2) in
-              if not (check p restricted h s c b) then incr bad);
-          !bad)
-      |> Array.fold_left ( + ) 0
-    in
-    bad2 := !bad2 + bad;
-    fails := !fails + bad;
-    write_file st (Printf.sprintf "pass2 %d %d\n" (sl + 1) !fails);
-    Printf.printf "  pass 2: slice %d of %d, %d failed in this run (%.0fs)\n%!" (sl + 1) slices !bad2 (Unix.gettimeofday () -. t0)
+     slices of the table. Returns the entries that fail. *)
+  let pass2 first =
+    let restricted s = fst (packed_choice (fun e -> Option.map vline (Tbl.find used e)) s) in
+    let all = Sys.getenv_opt "TCB_HINT" = Some "all" in
+    let slices = 32 in
+    let failed = ref [] in
+    let pid = Unix.getpid () in
+    let name k = Filename.concat wdir (Printf.sprintf "certa-%d-pass2-%d" pid k) in
+    for sl = first to slices - 1 do
+      let lo, hi = Par.chunk cap slices sl in
+      let w = Par.workers used.Tbl.n 2000 in
+      ignore
+        (Par.map ~dir:wdir w (fun k ->
+             let a, b = Par.chunk (hi - lo) w k in
+             let oc = open_out (name k) in
+             let ok2, hint2, reset2 = oracle p restricted in
+             Tbl.iter_range used (lo + a) (lo + b) (fun e v ->
+                 let s = dec e and c, b = vline v in
+                 let h = if all then (fun _ _ -> true) else (reset2 (); ignore (ok2 true (a_entry p.m s) c b 0); hint2) in
+                 if not (check p restricted h s c b) then Printf.fprintf oc "%d %d\n" (fst e) (snd e));
+             close_out oc;
+             0));
+      for k = 0 to w - 1 do
+        read_lines (name k) (fun line -> Scanf.sscanf line "%d %d" (fun k1 k2 -> failed := (k1, k2) :: !failed))
+      done;
+      write_file st (Printf.sprintf "pass2 %d %d\n" (sl + 1) (!fails + List.length !failed));
+      Printf.printf "  pass 2: slice %d of %d, %d failed (%.0fs)\n%!" (sl + 1) slices (List.length !failed)
+        (Unix.gettimeofday () -. t0)
+    done;
+    Printf.printf "pass 2 (closure only, hint %s): %d of %d failed (%.1fs)\n%!" (if all then "all" else "oracle")
+      (List.length !failed) used.Tbl.n (Unix.gettimeofday () -. t0);
+    !failed
+  in
+  (* Entries collected later can change what the lookup takes for an entry
+     checked earlier (at a higher A life, with a line not componentwise
+     higher). The entries pass 2 fails go back to pass 1, against
+     every entry collected, up to TCB_REPAIR times (default 8). *)
+  let repairs = match Sys.getenv_opt "TCB_REPAIR" with Some r -> int_of_string r | None -> 8 in
+  if phase = "pass1" then ignore (pass1 (done_ + 1));
+  let n1 = used.Tbl.n in
+  Printf.printf "pass 1: %d entries collected, %d failed so far (%.1fs)\n%!" n1 !fails (Unix.gettimeofday () -. t0);
+  let failed = ref (pass2 (if phase = "pass2" then done_ else 0)) in
+  let round = ref 0 in
+  while !failed <> [] && !round < repairs do
+    incr round;
+    let l = ref 0 in
+    Tbl.iter_range used 0 cap (fun _ v -> l := max !l (vlayer v + 1));
+    let l = !l in
+    List.iter (fun e -> Tbl.set used e (venc (vline (Option.get (Tbl.find used e))) l)) !failed;
+    Printf.printf "repair %d: %d entries back to pass 1 as layer %d\n%!" !round (List.length !failed) l;
+    ignore (pass1 l);
+    failed := pass2 0
   done;
-  Printf.printf "pass 2 (closure only, hint %s): %d of %d failed in this run; %d failures in all (%.1fs)\n%!"
-    (if all then "all" else "oracle") !bad2 n !fails
-    (Unix.gettimeofday () -. t0);
+  fails := !fails + List.length !failed;
+  let n = used.Tbl.n in
+  Printf.printf "%d entries, %d failures in all (%.1fs)\n%!" n !fails (Unix.gettimeofday () -. t0);
   (* the entries, sorted by packed key *)
   let raw = st ^ "-entries" in
   let oc = open_out raw in
@@ -843,16 +895,14 @@ let export entries starter ~outdir ~chunks p =
   done;
   Printf.printf "certify-a-export %s: %d entries; K=%d Hb=%d ott=%d tt=%d M=%d fuel=%d (%.1fs)\n%!" entries n p.k
     p.hb p.ott p.tt p.m p.fuel (Unix.gettimeofday () -. t0);
-  (* PackedA.alookup: in the run of [s]'s position, the first entry with the
-     greatest line among those at [s]'s A life or less *)
+  (* PackedA.alookup: in the run of [s]'s position, the last entry at
+     [s]'s A life or less *)
   let lk0 s =
     let k1, k2 = enc s in
-    let lkey j = ls.(j) land 0xfffff in
     let rec go f j best =
       if f = 0 then best
       else if Certify.in_run k1s k2s j k1 k2 then
-        if Certify.alife k1s.(j) <= Certify.alife k1 then go (f - 1) (j + 1) (if best >= n || lkey best < lkey j then j else best)
-        else best
+        if Certify.alife k1s.(j) <= Certify.alife k1 then go (f - 1) (j + 1) j else best
       else best
     in
     let j = go 64 (Certify.packed_start k1s k2s k1 k2) n in

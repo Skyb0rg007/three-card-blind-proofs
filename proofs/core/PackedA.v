@@ -70,23 +70,17 @@ Definition astart (k1 k2 : int) : int := alower 32 0 N (shr k1 5) k2.
 
 Definition in_arun (j k1 k2 : int) : bool := ltb j N && eqb (shr (get C1 j) 5) (shr k1 5) && eqb (get C2 j) k2.
 
-(** The line of entry [j] as one integer, ordered as [(c, b)]
-    lexicographically. *)
-Definition lkey (j : int) : int := iand (get CV j) 1048575.
-
 (** Among the entries of the run of [(k1, k2)] from [j] with at most
-    [k1]'s A life, the first with the greatest line in the order of [lkey]
-    ([best] if none). A run is sorted by A life. A position's lines almost
-    always grow with A's life, so this is almost always the line above all
-    the others. *)
+    [k1]'s A life, the last, so the one at the highest such A life ([best]
+    if none). A run is sorted by A life. A position's lines almost always
+    grow with A's life; and an entry at exactly [k1]'s A life is always the
+    one chosen, so any state can be given the line of its own position. *)
 Fixpoint abest (f : nat) (j k1 k2 best : int) : int :=
   match f with
   | O => best
   | S f =>
       if in_arun j k1 k2 then
-        if leb (alife (get C1 j)) (alife k1) then
-          abest f (add j 1) k1 k2 (if negb (ltb best N) || ltb (lkey best) (lkey j) then j else best)
-        else best
+        if leb (alife (get C1 j)) (alife k1) then abest f (add j 1) k1 k2 j else best
       else best
   end.
 

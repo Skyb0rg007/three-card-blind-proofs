@@ -1229,10 +1229,13 @@ Done: `a_first_a_safe` and `a_first_draw` are proved in `Results.v`.
   lookup finds them by binary search and takes, among those at A's life
   or more (B tables), the one needing the least life (for wins, of the
   rank asked, or the least below it), and among those at A's life or less
-  (A table), the first with the greatest line `(c, b)` in lexicographic
-  order. Lines almost always grow with A's life (of 23.8M steps from one A
-  life to the next in the A-safe table, 19,094 decrease), so this is
-  almost always the line above all the others. Nothing about the choice
+  (A table), the one at the highest A life. Lines almost always grow with
+  A's life (of 23.8M steps from one A life to the next in the A-safe
+  table, 19,094 decrease), so this is almost always the highest line; and
+  since an entry at the state's own A life is always the one taken, a
+  state can always be given its own line (an earlier rule, the greatest
+  line in lexicographic order, could not, and left a few entries no
+  entry could serve). Nothing about the choice
   needs trust: the entry returned is checked (`state_eqb`) to be the
   looked-up state with A's life changed. The exporters then collect the
   closure of the opening differently: at each of the protagonist's nodes

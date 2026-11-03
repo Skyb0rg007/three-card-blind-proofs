@@ -11,26 +11,6 @@
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
 
 (rule
- (target DataC1_2.v)
- (deps DataC1_2.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataC1_3.v)
- (deps DataC1_3.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataC1_4.v)
- (deps DataC1_4.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataC1_5.v)
- (deps DataC1_5.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
  (target DataC2_0.v)
  (deps DataC2_0.v.xz)
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
@@ -41,26 +21,6 @@
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
 
 (rule
- (target DataC2_2.v)
- (deps DataC2_2.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataC2_3.v)
- (deps DataC2_3.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataC2_4.v)
- (deps DataC2_4.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataC2_5.v)
- (deps DataC2_5.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
  (target DataCV_0.v)
  (deps DataCV_0.v.xz)
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
@@ -68,26 +28,6 @@
 (rule
  (target DataCV_1.v)
  (deps DataCV_1.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataCV_2.v)
- (deps DataCV_2.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataCV_3.v)
- (deps DataCV_3.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataCV_4.v)
- (deps DataCV_4.v.xz)
- (action (with-stdout-to %{target} (run xz -dc %{deps}))))
-
-(rule
- (target DataCV_5.v)
- (deps DataCV_5.v.xz)
  (action (with-stdout-to %{target} (run xz -dc %{deps}))))
 
 (rocq.theory

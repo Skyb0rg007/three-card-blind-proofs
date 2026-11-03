@@ -8,23 +8,11 @@ Definition tt := 8.
 Definition fuel := 200.
 Require Import DataC1_0.
 Require Import DataC1_1.
-Require Import DataC1_2.
-Require Import DataC1_3.
-Require Import DataC1_4.
-Require Import DataC1_5.
 Require Import DataC2_0.
 Require Import DataC2_1.
-Require Import DataC2_2.
-Require Import DataC2_3.
-Require Import DataC2_4.
-Require Import DataC2_5.
 Require Import DataCV_0.
 Require Import DataCV_1.
-Require Import DataCV_2.
-Require Import DataCV_3.
-Require Import DataCV_4.
-Require Import DataCV_5.
-Definition C1 : array (array int) := [| C1_0; C1_1; C1_2; C1_3; C1_4; C1_5 | C1_0 |].
-Definition C2 : array (array int) := [| C2_0; C2_1; C2_2; C2_3; C2_4; C2_5 | C2_0 |].
-Definition CV : array (array int) := [| CV_0; CV_1; CV_2; CV_3; CV_4; CV_5 | CV_0 |].
-Definition N : int := 5879511%uint63.
+Definition C1 : array (array int) := [| C1_0; C1_1 | C1_0 |].
+Definition C2 : array (array int) := [| C2_0; C2_1 | C2_0 |].
+Definition CV : array (array int) := [| CV_0; CV_1 | CV_0 |].
+Definition N : int := 1077719%uint63.

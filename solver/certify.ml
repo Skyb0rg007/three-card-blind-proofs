@@ -845,8 +845,13 @@ let certify_win_export dir starter ~outdir ~chunks ~fuel:f =
   Printf.printf "export: %d records, %d ranks\n%!" n (Array.length ranks);
   let k1s = Array.map (fun (k1, _, _, _) -> k1) recs and k2s = Array.map (fun (_, k2, _, _) -> k2) recs in
   let rv = Array.map (fun (_, _, r, v) -> (r lsl 6) lor v) recs in
-  let cost, bad = costs ~dir:outdir n (record_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s rv) in
   let rk0 = dense r0 in
+  (* the closure's tables go before the workers fork: a child's GC would
+     touch, and so copy, every page of a large heap *)
+  Hashtbl.reset used;
+  res := (Hashtbl.create 1, Hashtbl.create 1, 0);
+  Gc.compact ();
+  let cost, bad = costs ~dir:outdir n (record_check ~h:t.h ~ott:t.ott ~tt:t.tt ~fuel:f k1s k2s rv) in
   let lv0 = win_lookup k1s k2s rv (ref 0) k0 rk0 in
   Printf.printf "pass 2 (as in Rocq, fuel %d): %d of %d records fail, cost %d; opening: rank %d, value %s (%.1fs)\n%!"
     f (List.length bad) n (Array.fold_left ( + ) 0 cost) rk0
