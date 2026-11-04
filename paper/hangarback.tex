@@ -1,0 +1,285 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=0.9in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}
+
+\setlist{itemsep=2pt, topsep=4pt}
+\newcommand{\Walker}{Hangarback Walker}
+
+\title{Hangarback Walker in Three-Card Blind:\\
+  why the Elixir player wins on the play and draws on the draw}
+\author{}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Player A has two \Walker{}s and City of Traitors. Player B has one
+\Walker, Elixir of Immortality and City of Traitors. This matchup was
+judged too complex to resolve, and \Walker{} was banned from Three-Card
+Blind. We settle it: when B plays first, B wins; when A plays first,
+neither player can force a win, so the game is a draw. Both results are
+theorems in the Rocq proof assistant. This note explains in terms of the
+cards why they hold, and sketches how they were proved.
+\end{abstract}
+
+\section{The answer}
+
+Three-Card Blind games are played with perfect information and optimal
+play. Both players start on 20 life with their three cards in hand. Drawing
+from an empty library does nothing. Random effects go the opponent's way,
+so when Elixir shuffles B's library, A chooses the order.
+
+The clearest way to see the results is to ask how much life B would need.
+For each opening there is a level of B's starting life at or below which
+A can force a win, and a level at or above which B can force a win:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Who plays first & A wins if B starts on & B wins if B starts on \\
+\midrule
+B & 10 or less$^{\dagger}$ & 17 or more$^{*}$ \\
+A & 15 or less$^{\dagger}$ & 24 or more$^{\dagger}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+B actually starts on 20. On the play, 20 is in B's winning range, and
+Rocq proves that B wins. On the draw, 20 falls in the gap between the two
+levels, and Rocq proves both halves of the draw: A can't win from 20, and
+B can't win from 20 either. Being on the play moves both levels in B's
+favour.
+
+{\small
+\noindent
+$^{*}$ B's proof strategy needs only 17 of its 20 life.
+$^{\dagger}$ Found by the solver with the same sound methods as the
+proofs, but not checked in Rocq. Each is a bound: A wins at least up to
+the number shown, and B wins from at least the number shown. That these
+are the \emph{exact} levels is the solver's best estimate.\par}
+
+\section{Five facts that drive every game}
+\label{sec:facts}
+
+\begin{enumerate}[label=\textbf{F\arabic*.}, leftmargin=*]
+\item \textbf{Two mana a round.} City untaps only in its owner's untap
+  step, and mana empties between steps. A player spends their 2 mana
+  either on their own turn (to cast) or by leaving City untapped and
+  using it on the opponent's turn (to pump or activate Elixir).
+\item \textbf{A Walker can attack or grow in a round, but not both.} A
+  pump costs \{1\},\{T\}, so a tapped Walker can't be pumped. A Walker
+  that attacks stays tapped through the opponent's turn. A Walker pumped
+  on its owner's turn is also still tapped on the opponent's turn, so it
+  can't block. Players therefore pump on the opponent's turn, after that
+  turn's combat, and keep their Walkers untapped as blockers until then.
+  B also pumps in its own second main phase when 1 mana is left over
+  after casting Elixir. A new Walker is summoning sick until its owner's
+  next turn, so it can't be pumped before then.
+\item \textbf{Killing a Walker arms its owner.} A dying Walker leaves one
+  flying 1/1 Thopter per counter. Walkers can't block fliers; only
+  Thopters can. So the side that wins a Walker fight hands the loser an
+  evasive army of the same size.
+\item \textbf{Elixir is a 3-mana loop.} Casting costs 1 and activating
+  costs 2. Activating gains 5 life and shuffles Elixir and B's graveyard,
+  including a dead Walker, back into B's library. B then draws them again
+  on later turns. (In every line shown here A puts Elixir on top, so a
+  dead Walker comes back one draw later. The proofs cover both orders.)
+  At 2 mana a round, B can gain 5 life about every two rounds.
+\item \textbf{A's losses are permanent.} A has no recursion and no life
+  gain. A dead A Walker stays dead.
+\end{enumerate}
+
+\noindent
+So the decks pull in opposite directions. \emph{A has growth}: two
+Walkers, 2 counters a round while they stay home. \emph{B has life and
+recursion}: 5 life every two rounds, and a Walker that always comes back.
+Every combat decision weighs one against the other.
+
+\section{B on the play: B wins}
+
+\paragraph{The opening.} The proof's strategy, against an A that keeps
+its Walkers home:
+
+\begin{center}
+\begin{tabular}{clll}
+\toprule
+Round & B's turn & A's turn & Life (A, B) \\
+\midrule
+1 & Walker, $X=1$ & Walker, $X=1$ & 20, 20 \\
+2 & pump to 2/2, cast Elixir & second Walker, $X=1$ & 20, 20 \\
+3 & 2/2 attacks, A doesn't block & --- & 18, 20 \\
+4 & 2/2 attacks, A doesn't block; & B activates Elixir & 16, 25 \\
+  & \quad A pumps both Walkers to 2/2 & \quad in A's end step & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Going first, B has a 2/2 attacking in round 3, while A has just spent
+both of its first two rounds of mana casting two 1/1s. Why doesn't A
+block? A double block kills the 2/2, but B can assign its 2 damage to kill
+both 1/1s. A then has two Thopters and no Walkers, for good. B has two
+Thopters, and its Walker comes back with the next Elixir.
+
+\paragraph{A's dilemma.} From here, B's 2/2 or 3/3 attacks every turn
+it can, even into bigger untapped A Walkers. Both of A's answers lose
+ground:
+\begin{itemize}
+\item \emph{Block.} B's Walker dies into Thopters that A's Walkers can't
+  block (F3), and Elixir brings the Walker back (F4). A swaps damage on
+  the ground for damage in the air, and B has lost nothing for good.
+\item \emph{Don't block.} A takes 2 or 3 a turn.
+\end{itemize}
+A can't race either. Every A Walker that attacks gives up a counter and
+a blocker for the round (F2), while Elixir hands B back 5 life every two
+rounds and nothing hands A back anything (F5). In the proof's main line
+A first blocks on B's ninth turn, with a 6/6. B's 3/3 becomes three
+Thopters, which finish A in the air.
+
+\paragraph{The game ends.} B's strategy always makes progress. From any
+position it reaches, B deals A another point of damage within a bounded
+number of turns (17 from the opening), and A has only 20 life to lose.
+The longest game this allows is under 800 turns; sample lines end in 19
+to 55.
+
+\paragraph{The Elixir is the whole matchup.} If B is not allowed to use
+Elixir, the solver finds no B win from any starting life up to 100. It
+also finds no way for B to avoid losing when A goes first. (These are
+solver checks with size limits, not theorems.)
+
+\section{A on the play: a draw}
+
+A draw means neither side can force the other to 0. With best play the
+game goes on forever: B keeps gaining life and A keeps growing, and
+neither can break through.
+
+\subsection{A can't win}
+B is safe from 20 life. B plays much as on the play, but keeps home
+just enough Thopters to chump-block, so that A's all-out attack next
+turn is not lethal, counting Elixir's 5 life. When an attack is lethal,
+B chumps A's biggest Walkers first and activates Elixir after blocks.
+
+The proof's main line shows A racing. From turn 14, A
+attacks every other turn with a 6/6 and a 4/4, 10 damage a swing, while
+B's 4/4 hits back. B takes $4+10+10+10 = 34$ damage, gains 15 from three
+Elixirs, and ends on $20+15-34 = 1$ life. Then B's next swing kills A.
+Without Elixir, B would have died to A's second big swing.
+
+\subsection{B can't win}
+A is safe as long as B has at most 20 life. Roughly, A plays like this:
+\begin{itemize}
+\item On its own turn A only casts Walkers. City's mana is for B's turn,
+  where A pumps in the end step.
+\item A's Walkers attack only when each is bigger than B's Walker (or B has none). A
+  second case: if B's Walker is tapped, A sends its bigger Walker alone
+  (once it has 3 counters) and keeps the smaller home to grow.
+\item A blocks only a large B Walker that is bigger than all of its own,
+  and uses its smallest Walker to do it.
+\end{itemize}
+
+\paragraph{Why A keeps up with Elixir.} B can gain 5 life every two
+rounds forever, so no fixed amount of damage can keep A safe. A's threat
+has to grow too. Each Elixir cycle uses 3 of the 4 mana B gets in two
+rounds. In the same two rounds A's two Walkers can gain 4 counters. The
+proof tracks the most life B can have with A still safe. Along B's most
+aggressive line, that number and B's actual life move together: each
+Elixir raises both by 5, and each hit from A lowers both. B never gets
+ahead, and that line ends with B on exactly 0. B can avoid it by playing
+safe, so the result is a draw, not an A win.
+
+\paragraph{A must hold Thopters back.} Once Walkers have traded into
+Thopters, A has to split its Thopters, some attacking and some at home
+to block B's Walker. A proof that lets A attack only with all of its
+Thopters or none can't reach 20 (even an optimistic version of that check
+stops at 19). Allowing A to keep up to two Thopters home reaches exactly
+20.
+
+\subsection{Why exactly 20?}
+\label{sec:open}
+Both halves of the draw have no margin. B is safe from exactly 20 life,
+and A is safe up to exactly 20. That comes from the proofs, not the game.
+Each proof gives its own side fewer options than the real game has
+(\S\ref{sec:proof}), and those limits were loosened only until each
+proof reached 20. With looser limits the solver puts the levels at 15
+for A and 24 for B, so 20 sits well inside the drawn range.
+
+\section{How it was proved}
+\label{sec:proof}
+
+\paragraph{The model.} The rules are the Comprehensive Rules in force
+when \Walker{} was banned, with damage assignment order, plus the
+Three-Card Blind format rules. The model is written in Rocq. It leaves
+out only what can't matter with these six cards, and each omission is
+justified in writing. For example, there is no stack: nothing here
+targets or counters anything, and the effects give the same result in any
+order, so responding never changes the outcome. Rocq also proves that
+the model never gets stuck, never creates or loses a card, and has no
+move that does nothing.
+
+\paragraph{What is claimed.} ``B wins'' means B can force A to 0 life in
+finitely many moves, whatever A does. ``A is safe'' means A has a set of
+positions that contains the start and no lost position, and that B can
+never force A out of. A draw means both players are safe.
+
+\paragraph{Making an infinite game finite.} Walker counters, Thopters and
+B's life are all unbounded. A \emph{certificate} is a finite table of
+positions, one for each turn start, that a checker can verify one turn at
+a time. Five ideas keep it finite:
+\begin{itemize}
+\item \emph{Only turn starts are stored.} The play within each turn is
+  searched in full.
+\item \emph{B's life is not part of the position.} More life never hurts
+  B, so each entry stores only the least life B needs, or the most life A
+  can allow.
+\item \emph{The side being proved may be restricted.} Giving up some of
+  your own moves can't create a win you don't have. For example, B's
+  winning strategy never grows its Walker past 4 counters.
+\item \emph{The opponent gets every legal move,} but its large numbers
+  are cut off in a way that can only hurt the side being proved. An
+  opponent Walker past a size limit counts as being of unknown size, and
+  any event where its exact size would matter counts as a loss.
+\item \emph{A's growing threat.} For A's safety, a size limit on A's own
+  Walkers can't work, because B's life grows without bound. Instead, one
+  A Walker past the limit stands for every larger size at once, $K+n$
+  counters for all $n \ge 0$. Each entry then stores the most life B may
+  have as a linear function of $n$.
+\end{itemize}
+
+\paragraph{Checking.} An untrusted solver computes the tables. Rocq
+proves, once and for all, that any table whose entries all pass the
+checker proves the claim. Then it checks every entry: about 0.57 million
+positions for the B-first win, and 0.13 million and 0.58 million for the
+two halves of the A-first draw, in about 40 CPU-minutes. A wrong table
+can only make the check fail. Only Rocq itself has to be trusted.
+
+\section{What is not settled}
+\begin{itemize}
+\item \textbf{Short rule strategies are summaries.} Rules like A's in
+  \S4.2, written for both players, agree with the proofs' strategies at about 98.5--99.4\% of decisions. B's
+  most common exception is attacking with the Walker while Elixir is in
+  hand. With no exceptions, the rule strategies fail the solver's checks.
+  Patching B's exceptions one at a time made the total worse. Many
+  exceptions have no game reason we could find, and they may come from
+  the certificates' limits rather than from the game.
+\item \textbf{The exact levels.} The $\dagger$ numbers in \S1 have not
+  been checked in Rocq. Whether B could also win on the play from 11--16
+  life is open.
+\item \textbf{Why tempo matters so much.} The solver shows that going
+  first moves B's level from about 24 to 17 or less. It doesn't show why.
+\end{itemize}
+
+\noindent
+The model, proofs and solver are at\\
+\url{https://github.com/Skyb0rg007/three-card-blind-proofs}.
+
+\end{document}
