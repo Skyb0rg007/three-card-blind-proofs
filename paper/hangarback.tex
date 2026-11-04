@@ -58,7 +58,7 @@ B actually starts on 20. On the play, 20 is in B's winning range, and
 Rocq proves that B wins. On the draw, 20 falls in the gap between the two
 levels, and Rocq proves both halves of the draw: A can't win from 20, and
 B can't win from 20 either. Being on the play moves both levels in B's
-favour.
+favour; \S\ref{sec:tempo} shows where that comes from.
 
 {\small
 \noindent
@@ -163,6 +163,28 @@ A draw means neither side can force the other to 0. With best play the
 game goes on forever: B keeps gaining life and A keeps growing, and
 neither can break through.
 
+\subsection{What changes on the draw}
+\label{sec:tempo}
+For two rounds the openings look alike. Both players cast a Walker; then
+A casts its second Walker while B pumps to 2/2 and casts Elixir. What
+changes is where B's first attack falls in the turn order.
+\begin{itemize}
+\item \emph{On the play,} B's first attack (round 3) comes straight after
+  A's turn 2, in which A spent City's mana on its second Walker. A is
+  tapped out and can't grow anything. The 2/2 hits again in round 4,
+  and A's Walkers reach 2/2 only after that, with A on 16.
+\item \emph{On the draw,} A's turn 3 comes before B's first attack. A
+  casts nothing and keeps City untapped. Once the 2/2 has hit, A pumps
+  both Walkers to 2/2, with A on 18. In the solver's line, B's 2/2 stays
+  home on its next turn, facing two untapped 2/2s.
+\end{itemize}
+The solver puts a number on that one round of mana. Take B's turn with
+its first attack, B's 2/2 and Elixir against two 1/1s. B needs 16 life to
+win when A is tapped out with its second Walker just cast, and 24 when A has City's mana and both Walkers
+ready$^{\dagger}$. The same solver table gives 17 for the B-first opening
+and 24 for the A-first one. So A's mana during B's first attack accounts
+for the whole difference between the openings.
+
 \subsection{A can't win}
 B is safe from 20 life. B plays much as on the play, but keeps home
 just enough Thopters to chump-block, so that A's all-out attack next
@@ -188,14 +210,32 @@ A is safe as long as B has at most 20 life. Roughly, A plays like this:
 \end{itemize}
 
 \paragraph{Why A keeps up with Elixir.} B can gain 5 life every two
-rounds forever, so no fixed amount of damage can keep A safe. A's threat
-has to grow too. Each Elixir cycle uses 3 of the 4 mana B gets in two
-rounds. In the same two rounds A's two Walkers can gain 4 counters. The
-proof tracks the most life B can have with A still safe. Along B's most
-aggressive line, that number and B's actual life move together: each
-Elixir raises both by 5, and each hit from A lowers both. B never gets
-ahead, and that line ends with B on exactly 0. B can avoid it by playing
-safe, so the result is a draw, not an A win.
+rounds forever, so no fixed amount of damage keeps A safe. A's threat has
+to grow too, and it can. Elixir and growth compete for B's mana. Each
+loop costs B 3 mana for 5 life, plus 2 more to recast a dead Walker. A
+spends all of its mana on growth, and once both its Walkers are 3/3 it
+puts every counter on the bigger one. The proof's main line shows the
+effect. Here B picks, every turn, the move that leaves A the least room.
+\begin{itemize}
+\item \emph{Midgame.} A's 3/3 attacks whenever B's Walker is tapped,
+  and A's other Walker grows one counter a round. By turn 16 it is a 7/7,
+  and B's Walker has stopped at 4/4.
+\item \emph{The trade.} B's 4/4 attacks; A blocks with its 3/3 and
+  pumps it, so both die and each side gets four Thopters. The Thopters
+  trade off on A's next attack.
+\item \emph{Endgame.} A's lone 7/7 is left against B's Elixir loop.
+  B's Walker comes back each time as a 1/1, good only for chump-blocking,
+  and a loop that recasts it takes B about two and a half rounds of mana.
+  The 7/7 attacks every turn. B chumps some attacks and gains 5 a loop,
+  but enough 7-point hits get through. B's life runs 15, 8, 1, 6, 11, 4,
+  9, 2, 7, and then 0. B's last Thopter pings A for 1 a turn, from 11
+  down to 3, which is too slow.
+\end{itemize}
+The proof keeps score with the most life B can have while A stays safe.
+Along this line that number equals B's actual life at every turn: each
+Elixir raises both by 5, and each hit lowers both. B never gets ahead.
+B can avoid this line by playing for safety instead, so the result is a
+draw, not a win for A.
 
 \paragraph{A must hold Thopters back.} Once Walkers have traded into
 Thopters, A has to split its Thopters, some attacking and some at home
@@ -274,8 +314,8 @@ can only make the check fail. Only Rocq itself has to be trusted.
 \item \textbf{The exact levels.} The $\dagger$ numbers in \S1 have not
   been checked in Rocq. Whether B could also win on the play from 11--16
   life is open.
-\item \textbf{Why tempo matters so much.} The solver shows that going
-  first moves B's level from about 24 to 17 or less. It doesn't show why.
+\item \textbf{The value of tempo.} The 8 life that A's held mana is worth
+  (\S\ref{sec:tempo}) comes from the solver, not from the proofs.
 \end{itemize}
 
 \noindent
